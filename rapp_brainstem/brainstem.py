@@ -1435,6 +1435,16 @@ def diagnostics_report():
         summary_lines.append(f"- `{e['ts']}` **{e['type']}** {json.dumps(d) if d else ''}")
     error_summary = "\n".join(summary_lines) if summary_lines else "_No errors or warnings recorded_"
 
+    # Scrub sensitive fields from events before publishing
+    _SCRUB_KEYS = {"user_code", "device_code", "session_id"}
+    def _scrub_event(ev):
+        ev = dict(ev)
+        if ev.get("data"):
+            ev["data"] = {k: v for k, v in ev["data"].items() if k not in _SCRUB_KEYS}
+        return ev
+    events = [_scrub_event(e) for e in events]
+    client_events = [_scrub_event(e) for e in client_events]
+
     # Build compact book (no secrets, capped size)
     book = {
         "version": VERSION,
