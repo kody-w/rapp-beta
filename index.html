@@ -257,27 +257,38 @@
     </div>
     <div class="tier-body">
       <p class="metaphor">The biological brainstem keeps you alive — breathing, heartbeat, reflexes. Your AI brainstem does the same: it runs the core agent loop, calls tools, and responds. Everything else builds on top of this.</p>
-      <div class="steps">
+      <div class="one-liner" style="margin-top:16px">
         <div class="step">
-          <h3>1. Authenticate with GitHub</h3>
-          <p>Your GitHub Copilot subscription IS the AI engine. No OpenAI keys needed.</p>
-          <div class="cmd" onclick="copyCmd(event, this)">gh auth login</div>
-        </div>
-        <div class="step">
-          <h3>2. Start the brainstem</h3>
-          <p>The server starts on port 7071 with a chat UI, health endpoint, and agent auto-discovery.</p>
-          <div class="cmd" onclick="copyCmd(event, this)">brainstem</div>
-        </div>
-        <div class="step">
-          <h3>3. Talk to it</h3>
-          <p>Open <code>localhost:7071</code> in your browser, or hit the API directly.</p>
-          <div class="cmd" onclick="copyCmd(event, this)">curl -s localhost:7071/health | python3 -m json.tool</div>
-        </div>
-        <div class="step">
-          <h3>4. Make it yours</h3>
-          <p>Write a <code>soul.md</code> to define its personality. Drop <code>*_agent.py</code> files into the agents folder to give it skills. Point <code>SOUL_PATH</code> and <code>AGENTS_PATH</code> in <code>.env</code> to your private files.</p>
+          <h3>Run the one-liner</h3>
+          <p>This is the only step. It installs Python, clones the repo, sets up a venv, authenticates, and launches.</p>
+          <div class="cmd" id="brainstem-cmd" onclick="copyCmd(event, this)">curl -fsSL https://kody-w.github.io/rapp-installer/install.sh | bash</div>
+          <p style="margin-top:6px;font-size:12px;color:#8b949e;">Windows: <code style="cursor:pointer" onclick="copyCmd(event, this)">irm https://raw.githubusercontent.com/kody-w/rapp-installer/main/install.ps1 | iex</code></p>
         </div>
       </div>
+      <details style="margin-top:16px">
+        <summary style="color:#8b949e;font-size:13px;cursor:pointer;user-select:none">Advanced — manual steps</summary>
+        <div class="steps">
+          <div class="step">
+            <h3>1. Authenticate with GitHub</h3>
+            <p>Your GitHub Copilot subscription IS the AI engine. No OpenAI keys needed.</p>
+            <div class="cmd" onclick="copyCmd(event, this)">gh auth login</div>
+          </div>
+          <div class="step">
+            <h3>2. Start the brainstem</h3>
+            <p>The server starts on port 7071 with a chat UI, health endpoint, and agent auto-discovery.</p>
+            <div class="cmd" onclick="copyCmd(event, this)">brainstem</div>
+          </div>
+          <div class="step">
+            <h3>3. Talk to it</h3>
+            <p>Open <code>localhost:7071</code> in your browser, or hit the API directly.</p>
+            <div class="cmd" onclick="copyCmd(event, this)">curl -s localhost:7071/health | python3 -m json.tool</div>
+          </div>
+          <div class="step">
+            <h3>4. Make it yours</h3>
+            <p>Write a <code>soul.md</code> to define its personality. Drop <code>*_agent.py</code> files into the agents folder to give it skills. Point <code>SOUL_PATH</code> and <code>AGENTS_PATH</code> in <code>.env</code> to your private files.</p>
+          </div>
+        </div>
+      </details>
     </div>
   </div>
 
