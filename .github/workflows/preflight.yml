@@ -51,7 +51,7 @@ jobs:
       - name: docs/ Pages mirrors in sync
         run: |
           rc=0
-          for f in install.sh install.cmd install.command; do
+          for f in install.sh install.ps1 install.cmd install.command; do
             if ! cmp -s "$f" "docs/$f"; then
               echo "::error file=docs/$f::docs/$f is stale — run the RELEASING.md sync step (cp $f docs/$f)"
               rc=1
