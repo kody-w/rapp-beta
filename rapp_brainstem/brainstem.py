@@ -24,6 +24,9 @@ import threading
 import importlib.util
 import subprocess
 import traceback
+import secrets
+import hmac
+import functools
 from datetime import datetime, timezone
 
 import requests
@@ -48,7 +51,91 @@ load_dotenv()
 # brainstem directory (including .env with GITHUB_TOKEN, .copilot_token, etc.) over
 # the network at /<dirname>/<file>. index.html is served explicitly by the / route.
 app = Flask(__name__, static_folder=None)
-CORS(app)
+
+# CORS: allow only localhost origins (any port), not "*". A page the brainstem
+# serves is SAME-ORIGIN with its own fetches — including when reached over the LAN
+# by IP — so this never affects the real UI; it only stops OTHER websites from
+# scripting the brainstem inside a victim's browser.
+_LOCALHOST_ORIGIN_RE = re.compile(
+    r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$", re.IGNORECASE
+)
+CORS(app, origins=_LOCALHOST_ORIGIN_RE)
+
+# Cap request bodies so one giant POST can't exhaust memory (OOM). 16 MiB dwarfs any
+# real agent .py, voice.zip, or chat payload while blocking abuse; Flask returns 413.
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+
+# ── Loopback detection + LAN secret gate ──────────────────────────────────────
+# The server intentionally binds 0.0.0.0 (LAN access is a feature). To keep that
+# safe, code-loading / state-changing routes require a per-install secret (header
+# X-Brainstem-Secret) — EXCEPT for same-machine (loopback) callers, so the local UI
+# keeps working with zero changes. Read-only routes and /chat stay open so LAN
+# chat/twin still works.
+_LOOPBACK_ADDRS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+
+
+def _is_loopback(addr):
+    """True when a request originates from this machine (loopback)."""
+    if not addr:
+        return False
+    addr = addr.strip()
+    if addr in _LOOPBACK_ADDRS:
+        return True
+    if addr.startswith("::ffff:"):
+        addr = addr[len("::ffff:"):]
+    return addr == "127.0.0.1" or addr.startswith("127.")
+
+
+_SECRET_KEY_RE = re.compile(r"(token|authorization|secret|api[-_]?key|password)", re.IGNORECASE)
+
+
+def _scrub_secrets(text):
+    """Redact token/authorization/secret values from a string before logging. Parses a
+    JSON body and redacts matching keys (recursively); falls back to regex redaction
+    for non-JSON text. Never raises — logging must not crash the server."""
+    if not text:
+        return text
+    try:
+        obj = json.loads(text)
+
+        def _redact(o):
+            if isinstance(o, dict):
+                return {k: ("***REDACTED***" if _SECRET_KEY_RE.search(str(k)) else _redact(v))
+                        for k, v in o.items()}
+            if isinstance(o, list):
+                return [_redact(v) for v in o]
+            return o
+
+        return json.dumps(_redact(obj))
+    except Exception:
+        pass
+    scrubbed = re.sub(
+        r'("(?:token|authorization|secret|api[-_]?key|password)"\s*:\s*)"[^"]*"',
+        r'\1"***REDACTED***"', text, flags=re.IGNORECASE)
+    scrubbed = re.sub(r'\b(Bearer|token)\s+[A-Za-z0-9._\-=;:]+',
+                      r'\1 ***REDACTED***', scrubbed, flags=re.IGNORECASE)
+    return scrubbed
+
+
+def _require_secret(fn):
+    """Guard a code-loading / state-changing route. Loopback (same-machine) callers
+    are exempt so the local UI is unchanged; any other (LAN) caller must present the
+    per-install secret in the X-Brainstem-Secret header, else gets a clean 403 JSON."""
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        if not _is_loopback(request.remote_addr):
+            supplied = request.headers.get("X-Brainstem-Secret", "") or ""
+            expected = _load_or_create_secret() or ""
+            if not (expected and supplied and hmac.compare_digest(supplied, expected)):
+                _tlog("auth.secret_denied",
+                      {"route": request.path, "remote": request.remote_addr}, level="warn")
+                return jsonify({
+                    "error": "Forbidden: this endpoint requires a valid X-Brainstem-Secret "
+                             "header when called from another machine.",
+                }), 403
+        return fn(*args, **kwargs)
+
+    return _wrapped
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -464,6 +551,45 @@ threading.Thread(target=_tlog_autosave, daemon=True).start()
 COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 _token_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".copilot_token")
 _copilot_cache_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".copilot_session")
+# Per-install secret guarding LAN (non-loopback) access to code-loading / state-
+# changing routes. Stored 0600 NEXT TO the token files (same dir logic), generated on
+# first need, printed to the console once so the operator can hand it to LAN clients.
+_secret_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".brainstem_secret")
+BRAINSTEM_SECRET = None
+
+
+def _load_or_create_secret():
+    """Return the per-install secret, loading it from disk or generating it once.
+    Cached in BRAINSTEM_SECRET so steady-state requests never touch disk."""
+    global BRAINSTEM_SECRET
+    if BRAINSTEM_SECRET:
+        return BRAINSTEM_SECRET
+    try:
+        if os.path.exists(_secret_file):
+            with open(_secret_file, encoding="utf-8") as f:
+                existing = f.read().strip()
+            if existing:
+                BRAINSTEM_SECRET = existing
+                return BRAINSTEM_SECRET
+    except Exception:
+        pass
+    secret = secrets.token_urlsafe(32)
+    try:
+        # 0600 (owner read/write only) so other local users can't read the secret.
+        fd = os.open(_secret_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(secret)
+        try:
+            os.chmod(_secret_file, 0o600)
+        except OSError:
+            pass
+        print(f"[brainstem] Generated LAN access secret at {_secret_file} (0600).")
+        print(f"[brainstem]   Non-loopback mutating calls must send header  X-Brainstem-Secret: {secret}")
+        print(f"[brainstem]   Same-machine (loopback) UI never needs it.")
+    except Exception as e:
+        print(f"[brainstem] WARNING: could not persist secret file ({e}); using in-memory secret.")
+    BRAINSTEM_SECRET = secret
+    return BRAINSTEM_SECRET
 
 def _read_token_file():
     """Read the token file. Returns dict with at least 'access_token', or None."""
@@ -655,7 +781,12 @@ def _exchange_github_for_copilot(github_token):
         },
         timeout=10,
     )
-    print(f"[brainstem] Exchange response: HTTP {resp.status_code} — {resp.text[:300]}")
+    if 200 <= resp.status_code < 300:
+        # A 2xx body carries a live ~25-minute Copilot token — log the STATUS ONLY.
+        print(f"[brainstem] Exchange response: HTTP {resp.status_code} (ok)")
+    else:
+        # Non-2xx is an error body (no token), but scrub defensively before logging.
+        print(f"[brainstem] Exchange response: HTTP {resp.status_code} — {_scrub_secrets(resp.text[:300])}")
     return resp
 
 def get_copilot_token():
@@ -663,15 +794,22 @@ def get_copilot_token():
     global _copilot_token_cache
 
     # 1. Return in-memory cached token if still valid (with 60s buffer). Lock-free
-    #    fast path — the overwhelming majority of calls hit a warm cache.
-    if _copilot_token_cache["token"] and time.time() < _copilot_token_cache["expires_at"] - 60:
-        return _copilot_token_cache["token"], _copilot_token_cache["endpoint"]
+    #    fast path — the overwhelming majority of calls hit a warm cache. Snapshot the
+    #    dict into a local FIRST: refreshers REPLACE _copilot_token_cache wholesale, so
+    #    reading token+endpoint off one snapshot keeps them from the same generation
+    #    (a field-by-field read could pair a fresh token with a stale endpoint).
+    cache = _copilot_token_cache
+    if cache["token"] and time.time() < cache["expires_at"] - 60:
+        return cache["token"], cache["endpoint"]
 
     # Cache is cold/expired: serialize so only one thread does the exchange.
     with _copilot_token_lock:
         # Re-check — another thread may have refreshed while we waited for the lock.
-        if _copilot_token_cache["token"] and time.time() < _copilot_token_cache["expires_at"] - 60:
-            return _copilot_token_cache["token"], _copilot_token_cache["endpoint"]
+        # Snapshot again for the same torn-read reason (an unlocked _invalidate can
+        # swap the dict even while we hold the exchange lock).
+        cache = _copilot_token_cache
+        if cache["token"] and time.time() < cache["expires_at"] - 60:
+            return cache["token"], cache["endpoint"]
         return _get_copilot_token_locked()
 
 def _get_copilot_token_locked():
@@ -735,7 +873,7 @@ def _get_copilot_token_locked():
             except Exception:
                 err_msg = resp.text[:200]
             _tlog("auth.copilot_exchange_error", {"status": resp.status_code, "error": err_msg[:200]}, level="error")
-            print(f"[brainstem] Copilot token exchange failed (HTTP {resp.status_code}): {err_msg}")
+            print(f"[brainstem] Copilot token exchange failed (HTTP {resp.status_code}): {_scrub_secrets(err_msg)}")
             raise RuntimeError(
                 f"Copilot auth failed ({resp.status_code}): {err_msg}. Sign in with GitHub to retry."
             )
@@ -1843,8 +1981,17 @@ def chat_stream():
                 streamed_parts = []
 
                 if stream_supported:
+                    # Create the inner generator INSIDE the try (so a model that rejects
+                    # streaming — raising StreamingUnsupported on first use — is caught
+                    # here), and close it deterministically in finally. On client
+                    # disconnect the OUTER generator is closed while suspended at a yield
+                    # INSIDE this for-loop; a GeneratorExit unwinds this frame, and the
+                    # explicit close runs the inner generator's own finally (resp.close())
+                    # so the upstream socket is released immediately rather than on GC.
+                    stream_gen = None
                     try:
-                        for kind, payload in call_copilot_stream(messages, tools=tools):
+                        stream_gen = call_copilot_stream(messages, tools=tools)
+                        for kind, payload in stream_gen:
                             if kind == "delta":
                                 if payload:
                                     streamed_parts.append(payload)
@@ -1859,6 +2006,9 @@ def chat_stream():
                         # 30s of silence (or a dropped connection) — dead generation.
                         yield sse({"type": "error", "error": _TIMEOUT_USER_MSG})
                         return
+                    finally:
+                        if stream_gen is not None:
+                            stream_gen.close()
                     # A broken stream that still delivered text: keep it rather than
                     # re-fetching (avoids a duplicate answer).
                     if round_msg is None and streamed_parts:
@@ -1898,14 +2048,18 @@ def chat_stream():
                 try:
                     if not stream_supported:
                         raise StreamingUnsupported(0, "stream disabled this request", responded_model)
-                    for kind, payload in call_copilot_stream(messages, tools=None):
-                        if kind == "delta":
-                            if payload:
-                                collected.append(payload)
-                                yield sse({"type": "delta", "text": payload})
-                        elif kind == "done":
-                            reply = (payload["message"].get("content") or "").strip()
-                            responded_model = payload["model"]
+                    final_gen = call_copilot_stream(messages, tools=None)
+                    try:
+                        for kind, payload in final_gen:
+                            if kind == "delta":
+                                if payload:
+                                    collected.append(payload)
+                                    yield sse({"type": "delta", "text": payload})
+                            elif kind == "done":
+                                reply = (payload["message"].get("content") or "").strip()
+                                responded_model = payload["model"]
+                    finally:
+                        final_gen.close()
                     if not reply:
                         reply = "".join(collected).strip()
                     answer_streamed = bool(collected) or answer_streamed
@@ -1948,6 +2102,25 @@ def chat_stream():
             _tlog("chat_stream.error", {"status": status, "detail": detail[:200]}, level="error")
             yield sse({"type": "error", "error": f"Model '{requested_model}' returned {status}.",
                        "detail": detail})
+        except RuntimeError as e:
+            # Auth/config problems (raised by get_copilot_token, inside call_copilot_stream
+            # or the non-streaming fallback) arrive as RuntimeError. The no-Copilot case is
+            # an expected, user-actionable state — surface it as a STRUCTURED event that
+            # mirrors POST /chat's JSON shape, not a raw error string.
+            msg = str(e)
+            if msg.startswith("NO_COPILOT_ACCESS:"):
+                username = msg.split(":", 1)[1] or "this account"
+                _tlog("chat_stream.no_copilot_access", {"username": username}, level="warn")
+                yield sse({
+                    "type": "error",
+                    "no_copilot_access": True,
+                    "copilot_username": username,
+                    "error": msg,
+                })
+            else:
+                traceback.print_exc()
+                _tlog("chat_stream.error", {"error": msg[:200]}, level="error")
+                yield sse({"type": "error", "error": msg})
         except Exception as e:
             traceback.print_exc()
             _tlog("chat_stream.error", {"error": str(e)[:200]}, level="error")
@@ -2088,7 +2261,9 @@ def set_model():
     it stays the default across restarts; "auto" forgets the pick and re-selects
     the fastest available Claude (highest Haiku, falling back to Sonnet)."""
     global MODEL, _default_model_selected
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     new_model = data.get("model", "").strip()
     _fetch_copilot_models()
     if new_model.lower() == "auto":
@@ -2114,7 +2289,10 @@ def voice_config():
     """Serve voice config from password-protected voice.zip."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     voice_zip = os.path.join(base_dir, "voice.zip")
-    password = request.args.get("password", "").encode() or VOICE_ZIP_PW
+    # Accept the password via header (X-Voice-Password), never the query string, where
+    # it would be captured in server/proxy access logs and browser history.
+    supplied_pw = request.headers.get("X-Voice-Password", "")
+    password = supplied_pw.encode() or VOICE_ZIP_PW
     if os.path.exists(voice_zip):
         try:
             import pyzipper
@@ -2122,7 +2300,7 @@ def voice_config():
                 with zf.open("voice.json", pwd=password) as f:
                     cfg = json.load(f)
             return jsonify(cfg)
-        except (RuntimeError, Exception) as e:
+        except Exception as e:
             err = str(e).lower()
             if "password" in err or "bad password" in err or "decrypt" in err:
                 # Fallback: try standard zipfile (for unencrypted legacy zips)
@@ -2140,7 +2318,9 @@ def voice_config():
 @app.route("/voice/config", methods=["POST"])
 def voice_config_save():
     """Save voice config to AES-encrypted voice.zip for local persistence."""
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     password = data.pop("_password", None)
     if not password:
         return jsonify({"error": "Password required to export voice.zip"}), 400
@@ -2160,7 +2340,9 @@ def voice_config_save():
 @app.route("/voice/export", methods=["POST"])
 def voice_export():
     """Generate and return a password-protected voice.zip for download."""
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     password = data.pop("_password", None)
     if not password:
         return jsonify({"error": "Password required"}), 400
@@ -2181,6 +2363,7 @@ def voice_export():
         return jsonify({"error": str(e)}), 500
 
 @app.route("/voice/import", methods=["POST"])
+@_require_secret
 def voice_import():
     """Import a password-protected voice.zip and return its config."""
     if 'file' not in request.files:
@@ -2203,7 +2386,7 @@ def voice_import():
         with open(voice_zip, 'wb') as out:
             out.write(buf.read())
         return jsonify(cfg)
-    except (RuntimeError, Exception) as e:
+    except Exception as e:
         err = str(e).lower()
         if "password" in err or "decrypt" in err:
             return jsonify({"error": "Wrong password"}), 403
@@ -2213,7 +2396,11 @@ def voice_import():
 def voice_toggle():
     """Toggle voice mode on/off."""
     global VOICE_MODE
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        data = {}
+    elif not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     if "enabled" in data:
         VOICE_MODE = bool(data["enabled"])
     else:
@@ -2263,6 +2450,7 @@ def agents_export(filename):
     return jsonify({"error": "Agent not found"}), 404
 
 @app.route("/agents/<filename>", methods=["DELETE"])
+@_require_secret
 def agents_delete(filename):
     """Delete an agent .py file."""
     import werkzeug.utils
@@ -2285,6 +2473,7 @@ def agents_delete(filename):
     return jsonify({"error": "Agent not found"}), 404
 
 @app.route("/agents/import", methods=["POST"])
+@_require_secret
 def agents_import():
     """Import an agent .py file via drag & drop."""
     import werkzeug.utils
@@ -2371,7 +2560,14 @@ def health():
 
 @app.route("/debug/auth", methods=["GET"])
 def debug_auth():
-    """Debug endpoint — shows current auth state and tests token exchange."""
+    """Debug endpoint — shows current auth state and tests token exchange.
+
+    LOOPBACK ONLY: it performs a live token exchange whose success body carries a
+    usable Copilot token, so a remote caller must never reach it. It returns only
+    booleans / status codes — never a token or the exchange body itself."""
+    if not _is_loopback(request.remote_addr):
+        return jsonify({"error": "Forbidden: /debug/auth is available to loopback callers only."}), 403
+
     token = get_github_token()
     token_data = _read_token_file()
     copilot_cache = _load_copilot_cache()
@@ -2390,10 +2586,12 @@ def debug_auth():
     if token:
         try:
             resp = _exchange_github_for_copilot(token)
+            # Return ONLY the status — the exchange body (and any token echo) is never
+            # included, so this endpoint can't leak a live Copilot token.
             result["exchange_http_status"] = resp.status_code
-            result["exchange_response"] = resp.text[:500]
+            result["exchange_ok"] = 200 <= resp.status_code < 300
         except Exception as e:
-            result["exchange_error"] = str(e)
+            result["exchange_error"] = _scrub_secrets(str(e))
 
     return jsonify(result)
 
@@ -2468,7 +2666,11 @@ def diagnostics_report():
     if not github_token:
         return jsonify({"error": "Not authenticated — sign in first to submit a report."}), 401
 
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        data = {}
+    elif not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     user_description = data.get("description", "").strip() or "_No description provided_"
     client_events = data.get("client_events", [])
 
@@ -2599,6 +2801,7 @@ if __name__ == "__main__":
     agents = load_agents()
     _tlog("server.agents_loaded", {"agents": list(agents.keys())})
     _load_pending_login()  # Resume any in-progress device code login
+    _load_or_create_secret()  # Generate + print the LAN access secret once on first run
     _tlog("server.ready", {"url": f"http://localhost:{PORT}"})
 
     # HTTPServer.server_bind reverse-DNS-resolves the bind address between bind()
