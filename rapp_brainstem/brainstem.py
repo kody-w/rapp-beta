@@ -27,7 +27,7 @@ import traceback
 from datetime import datetime, timezone
 
 import requests
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 from dotenv import load_dotenv
 
@@ -1358,6 +1358,171 @@ def call_copilot(messages, tools=None):
     # callers can surface a silent substitution instead of hiding it.
     return result, body["model"]
 
+# ── Streaming LLM call ───────────────────────────────────────────────────────
+#
+# call_copilot_stream is the streaming twin of call_copilot. It exists ONLY to
+# serve the new /chat/stream endpoint — the non-streaming call_copilot and the
+# POST /chat contract are untouched. Any model that rejects stream:true raises
+# StreamingUnsupported so callers transparently fall back to call_copilot.
+
+
+class StreamingUnsupported(Exception):
+    """Raised when the endpoint rejects a stream:true request (HTTP 4xx/5xx before
+    any token, an o1-style model, an 'unsupported' body, etc.). Callers catch this
+    and fall back to the non-streaming call_copilot for that round, so the user
+    still gets an answer and the /chat contract never changes."""
+
+    def __init__(self, status, detail, model):
+        self.status = status
+        self.detail = detail
+        self.model = model
+        super().__init__(f"Model '{model}' rejected streaming ({status}): {str(detail)[:200]}")
+
+
+def _accumulate_stream(resp):
+    """Parse a Copilot SSE (`stream:true`) response.
+
+    Yields ('delta', text) for each content fragment the instant it arrives, and
+    RETURNS the fully-merged assistant message via StopIteration.value:
+        {"message": {...}, "finish_reason": ...}
+
+    Merge rules (the whole point — fragments must reassemble correctly):
+      - content fragments are concatenated in arrival order.
+      - tool_calls are keyed by their delta 'index' (NOT the choice index), so a
+        single call whose id/name/arguments are split across many chunks rebuilds
+        into one call. Claude-style multi-choice deltas (text on one choice,
+        tool_calls on another) therefore merge correctly too.
+    """
+    content_parts = []
+    tool_slots = {}       # tool-call index -> accumulating {id,type,function{name,arguments}}
+    finish_reason = None
+
+    for raw in resp.iter_lines(decode_unicode=True):
+        if raw is None:
+            continue
+        line = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+        line = line.strip()
+        # SSE frames are `data: {json}`; skip blanks, comments (`: heartbeat`), etc.
+        if not line or not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            chunk = json.loads(payload)
+        except Exception:
+            continue
+        for choice in (chunk.get("choices") or []):
+            delta = choice.get("delta") or {}
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+                yield ("delta", piece)
+            for tcd in (delta.get("tool_calls") or []):
+                idx = tcd.get("index", 0)
+                slot = tool_slots.setdefault(idx, {
+                    "id": "", "type": "function",
+                    "function": {"name": "", "arguments": ""},
+                })
+                # id/name arrive whole in the first fragment for a call; arguments
+                # stream in pieces. Concatenating name is safe (it only ever grows
+                # from ""), and defends against a provider that fragments it.
+                if tcd.get("id"):
+                    slot["id"] = tcd["id"]
+                if tcd.get("type"):
+                    slot["type"] = tcd["type"]
+                fn = tcd.get("function") or {}
+                if fn.get("name"):
+                    slot["function"]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    slot["function"]["arguments"] += fn["arguments"]
+
+    message = {"role": "assistant"}
+    content = "".join(content_parts)
+    message["content"] = content if content else None
+    if tool_slots:
+        ordered = []
+        for i, key in enumerate(sorted(tool_slots.keys())):
+            slot = tool_slots[key]
+            # A call with no id still needs one so its tool result can bind to it.
+            if not slot["id"]:
+                slot["id"] = f"call_{i}"
+            ordered.append(slot)
+        message["tool_calls"] = ordered
+    return {"message": message, "finish_reason": finish_reason or ("tool_calls" if tool_slots else "stop")}
+
+
+def call_copilot_stream(messages, tools=None, model=None):
+    """Streaming counterpart to call_copilot. A generator that yields
+    ('delta', text) tuples as content arrives and finally ('done', {...}) with the
+    merged message, the model that produced it, and finish_reason.
+
+    Read timeout is (10, 30): 10s to connect, then a 30s ceiling BETWEEN chunks.
+    A live generation keeps emitting bytes so the read never times out; 30s of
+    total silence means the generation is dead and requests raises ReadTimeout,
+    which the caller surfaces as a clean error. That is the whole point — "no bytes
+    for N seconds" truly means dead.
+
+    Raises StreamingUnsupported (before any delta) when the model rejects
+    stream:true, so the caller can fall back to non-streaming call_copilot.
+    """
+    use_model = model or MODEL
+    copilot_token, endpoint = get_copilot_token()
+    url = f"{endpoint}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {copilot_token}",
+        "Content-Type": "application/json",
+        "Editor-Version": "vscode/1.95.0",
+        "Copilot-Integration-Id": "vscode-chat",
+    }
+    body = {"model": use_model, "messages": messages, "stream": True}
+    if tools:
+        body["tools"] = tools
+        if use_model not in _NO_TOOL_CHOICE_MODELS:
+            body["tool_choice"] = "auto"
+
+    print(f"[brainstem] STREAM call: model={use_model}, tools={len(tools) if tools else 0}")
+
+    resp = requests.post(url, headers=headers, json=body, stream=True, timeout=(10, 30))
+
+    # Self-heal a server-side-rejected cached token exactly once, like call_copilot.
+    if resp.status_code == 401:
+        _tlog("stream.token_rejected_401", {"model": use_model}, level="warn")
+        resp.close()
+        _invalidate_copilot_token()
+        copilot_token, endpoint = get_copilot_token()
+        url = f"{endpoint}/chat/completions"
+        headers["Authorization"] = f"Bearer {copilot_token}"
+        resp = requests.post(url, headers=headers, json=body, stream=True, timeout=(10, 30))
+
+    if resp.status_code != 200:
+        detail = ""
+        try:
+            detail = resp.text[:500]
+        except Exception:
+            pass
+        resp.close()
+        _tlog("stream.unsupported", {"model": use_model, "status": resp.status_code,
+                                     "detail": detail[:200]}, level="warn")
+        raise StreamingUnsupported(resp.status_code, detail, use_model)
+
+    # Same mojibake guard call_copilot documents: force UTF-8 for decode_unicode.
+    resp.encoding = "utf-8"
+    try:
+        final = yield from _accumulate_stream(resp)
+        yield ("done", {
+            "message": final["message"],
+            "model": use_model,
+            "finish_reason": final["finish_reason"],
+        })
+    finally:
+        # Runs on normal completion AND on GeneratorExit (client disconnect) —
+        # closing the response releases the socket so a dropped SSE client can
+        # never orphan this streaming request.
+        resp.close()
+
 # ── Agent execution ───────────────────────────────────────────────────────────
 
 
@@ -1538,6 +1703,218 @@ def chat():
         traceback.print_exc()
         _tlog("chat.error", {"error": str(e)[:200]}, level="error")
         return jsonify({"error": str(e)}), 500
+
+# ── /chat/stream endpoint (SSE) ───────────────────────────────────────────────
+#
+# Streaming twin of POST /chat. Same request body; responds as text/event-stream.
+# The non-streaming /chat above is DELIBERATELY untouched — clients fall back to it
+# on any error here, so the /chat contract is preserved verbatim.
+#
+# Events (each framed as `data: {json}\n\n`):
+#   {"type":"delta","text":"..."}    a content fragment, the instant it arrives
+#   {"type":"agent","logs":"..."}    emitted when a tool round executes
+#   {"type":"done", response, agent_logs, session_id, model, requested_model, streamed, ...}
+#   {"type":"error","error":"..."}   fatal; the stream ends
+
+@app.route("/chat/stream", methods=["GET", "POST"])
+def chat_stream():
+    # Accept POST JSON (the web UI) or GET query params (curl / EventSource).
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True)
+        if not isinstance(data, dict):
+            data = {}
+    else:
+        data = {
+            "user_input": request.args.get("user_input", ""),
+            "session_id": request.args.get("session_id"),
+        }
+        try:
+            data["conversation_history"] = json.loads(request.args.get("conversation_history", "[]"))
+        except Exception:
+            data["conversation_history"] = []
+
+    user_input = data.get("user_input", "")
+    if not isinstance(user_input, str):
+        user_input = ""
+    user_input = user_input.strip()
+    history = data.get("conversation_history", [])
+    if not isinstance(history, list):
+        history = []
+    session_id = data.get("session_id") or str(uuid.uuid4())
+
+    if not user_input:
+        return jsonify({"error": "user_input is required"}), 400
+
+    _tlog("chat_stream.request", {"session_id": session_id, "input_len": len(user_input),
+                                  "history_len": len(history)})
+
+    # Resolve soul / agents / tools OUTSIDE the generator so a config error returns
+    # a clean JSON 400/500 instead of a half-open event stream the client can't read.
+    # This mirrors /chat's setup exactly.
+    soul = load_soul()
+    agents = load_agents()
+    tools = []
+    for a in agents.values():
+        try:
+            tools.append(a.to_tool())
+        except Exception as e:
+            print(f"[brainstem] Skipping agent with bad metadata ({getattr(a, 'name', '?')}): {e}")
+    tools = tools or None
+
+    extra_context = ""
+    for agent in agents.values():
+        try:
+            ctx = agent.system_context()
+            if ctx:
+                extra_context += "\n" + ctx
+        except Exception as e:
+            print(f"[brainstem] system_context failed for {agent.name}: {e}")
+
+    system_content = soul + extra_context
+    if VOICE_MODE:
+        system_content += "\n\nIMPORTANT: End every response with |||VOICE||| followed by a concise, conversational version of your answer suitable for text-to-speech. Keep the voice version under 2-3 sentences. The part before |||VOICE||| should be the full formatted response."
+
+    messages = [{"role": "system", "content": system_content}]
+    messages += [m for m in history if m.get("role") in ("user", "assistant", "tool")]
+    messages.append({"role": "user", "content": user_input})
+
+    requested_model = MODEL
+
+    def sse(obj):
+        return f"data: {json.dumps(obj)}\n\n"
+
+    def generate():
+        all_logs = []
+        responded_model = requested_model
+        stream_supported = True     # flips false once any round rejects streaming
+        answer_streamed = True      # false if the FINAL answer text came from fallback
+        msg = None
+        try:
+            for _round in range(3):
+                round_msg = None
+                round_from_fallback = False
+                streamed_parts = []
+
+                if stream_supported:
+                    try:
+                        for kind, payload in call_copilot_stream(messages, tools=tools):
+                            if kind == "delta":
+                                if payload:
+                                    streamed_parts.append(payload)
+                                    yield sse({"type": "delta", "text": payload})
+                            elif kind == "done":
+                                round_msg = payload["message"]
+                                responded_model = payload["model"]
+                    except StreamingUnsupported as e:
+                        stream_supported = False
+                        _tlog("chat_stream.fallback", {"model": e.model, "status": e.status}, level="warn")
+                    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+                        # 30s of silence (or a dropped connection) — dead generation.
+                        yield sse({"type": "error", "error": _TIMEOUT_USER_MSG})
+                        return
+                    # A broken stream that still delivered text: keep it rather than
+                    # re-fetching (avoids a duplicate answer).
+                    if round_msg is None and streamed_parts:
+                        round_msg = {"role": "assistant", "content": "".join(streamed_parts)}
+
+                # Fall back to non-streaming when the model rejected streaming or the
+                # stream produced nothing usable (no content and no tool_calls).
+                if round_msg is None or (not round_msg.get("content") and not round_msg.get("tool_calls")):
+                    response, responded_model = call_copilot(messages, tools=tools)
+                    round_msg = response["choices"][0]["message"]
+                    round_from_fallback = True
+                    # Emit the whole content as one delta so the client still renders
+                    # it — but only if we didn't already stream partial text.
+                    if round_msg.get("content") and not streamed_parts:
+                        yield sse({"type": "delta", "text": round_msg["content"]})
+
+                # Track whether the content-bearing round was streamed or fell back.
+                if round_msg.get("content"):
+                    answer_streamed = not round_from_fallback
+
+                msg = round_msg
+                messages.append(msg)
+
+                if msg.get("tool_calls"):
+                    tool_results, logs = run_tool_calls(msg["tool_calls"], agents, session_id=session_id)
+                    all_logs.extend(logs)
+                    messages.extend(tool_results)
+                    yield sse({"type": "agent", "logs": "\n".join(logs)})
+                else:
+                    break
+
+            reply = (msg.get("content") if msg else "") or ""
+            # Budget exhausted while still asking for tools — one final tool-less
+            # completion so the user never gets a blank answer (mirrors /chat).
+            if not reply and msg and msg.get("tool_calls"):
+                collected = []
+                try:
+                    if not stream_supported:
+                        raise StreamingUnsupported(0, "stream disabled this request", responded_model)
+                    for kind, payload in call_copilot_stream(messages, tools=None):
+                        if kind == "delta":
+                            if payload:
+                                collected.append(payload)
+                                yield sse({"type": "delta", "text": payload})
+                        elif kind == "done":
+                            reply = (payload["message"].get("content") or "").strip()
+                            responded_model = payload["model"]
+                    if not reply:
+                        reply = "".join(collected).strip()
+                    answer_streamed = bool(collected) or answer_streamed
+                except StreamingUnsupported:
+                    final_response, responded_model = call_copilot(messages, tools=None)
+                    reply = (final_response["choices"][0]["message"].get("content") or "").strip()
+                    answer_streamed = False
+                    if reply:
+                        yield sse({"type": "delta", "text": reply})
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+                    yield sse({"type": "error", "error": _TIMEOUT_USER_MSG})
+                    return
+                if not reply:
+                    reply = ("I couldn't finish that within the available tool steps. "
+                             "Try rephrasing, or breaking it into smaller steps.")
+                    answer_streamed = False
+
+            done = {
+                "type": "done",
+                "response": reply,
+                "session_id": session_id,
+                "agent_logs": "\n".join(all_logs),
+                "voice_mode": VOICE_MODE,
+                "model": responded_model,
+                "requested_model": requested_model,
+                # Whether the final answer text was genuinely streamed token-by-token
+                # (true) or produced via the non-streaming fallback (false). The
+                # acceptance harness reads this to mark fallback=yes.
+                "streamed": answer_streamed,
+            }
+            if VOICE_MODE and "|||VOICE|||" in reply:
+                parts = reply.split("|||VOICE|||", 1)
+                done["response"] = parts[0].strip()
+                done["voice_response"] = parts[1].strip()
+            yield sse(done)
+
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 502
+            detail = (e.response.text[:300] if e.response is not None else str(e)[:300])
+            _tlog("chat_stream.error", {"status": status, "detail": detail[:200]}, level="error")
+            yield sse({"type": "error", "error": f"Model '{requested_model}' returned {status}.",
+                       "detail": detail})
+        except Exception as e:
+            traceback.print_exc()
+            _tlog("chat_stream.error", {"error": str(e)[:200]}, level="error")
+            yield sse({"type": "error", "error": str(e)})
+        finally:
+            _tlog("chat_stream.closed", {"session_id": session_id})
+
+    headers = {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",     # tell any proxy not to buffer the stream
+        "Connection": "keep-alive",
+    }
+    return Response(generate(), headers=headers)
 
 # ── /health endpoint ──────────────────────────────────────────────────────────
 
@@ -2150,4 +2527,7 @@ if __name__ == "__main__":
 
     http.server.HTTPServer.server_bind = _server_bind_no_rdns
 
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    # threaded=True so an in-flight SSE stream (/chat/stream) doesn't block the
+    # UI's concurrent /health polls or a second request. Non-streaming /chat is
+    # unaffected. Werkzeug's threaded dev server is fine for this local-first rig.
+    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
