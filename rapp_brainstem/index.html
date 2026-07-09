@@ -860,7 +860,7 @@
           <!-- Populated by JS -->
         </ul>
         <div style="font-size:10px; color:#8b949e; margin-top:12px; text-align:center;">
-          Drag & drop .py files anywhere to install new agents
+          Drag & drop agent.py files anywhere to install new agents
         </div>
       </div>
     </div>
@@ -2796,7 +2796,12 @@
         const ch = card.offsetHeight, cw = card.offsetWidth;
         let top, left;
         const inChat = t.id !== 'chat' && t.closest && t.closest('#chat');
-        if (inChat && innerWidth - r.right >= cw + 32) {
+        if (t.id === 'agents-panel' && r.left >= cw + 32) {
+          // The panel is right-anchored and tall — sit beside it on the left
+          // so the list being described stays fully visible.
+          left = r.left - cw - 16;
+          top = Math.max(8, Math.min(r.top + 8, innerHeight - ch - 8));
+        } else if (inChat && innerWidth - r.right >= cw + 32) {
           // Chat content (a reply, a thought line): sit beside it in the empty
           // margin so the card never covers what it's describing.
           left = Math.min(r.right + 16, innerWidth - cw - 8);
@@ -3083,7 +3088,7 @@
       setTimeout(() => {
         const st = steps[idx]; if (!st) return;
         const open = $('#agents-panel')?.classList.contains('open');
-        if (st.wait === 'panel' && open) { if (st.reactHtml) react(st.reactHtml); else advance(); }
+        if (st.wait === 'panel' && open) { if (st.reactHtml) react(st.reactHtml, () => $('#agents-panel')); else advance(); }
         if (st.panel && !open) openPanel();
       }, 60);
     }, true);
