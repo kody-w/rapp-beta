@@ -2693,12 +2693,13 @@
         background: #161b22; border: 1px solid #30363d; border-radius: 12px; color: #e6edf3;
         box-shadow: 0 8px 30px rgba(1,4,9,.7); font-size: 14px; line-height: 1.6; transition: top .2s ease, left .2s ease; }
       body.light-mode #tour-card { background: #ffffff; border-color: #d0d7de; color: #1f2328; box-shadow: 0 8px 30px rgba(31,35,40,.15); }
-      #tour-card .tc-bar { height: 2px; background: #21262d; border-radius: 12px 12px 0 0; overflow: hidden; }
+      #tour-card .tc-bar { height: 3px; margin: 12px 18px 0 18px; background: #21262d;
+        border-radius: 3px; overflow: hidden; }
       body.light-mode #tour-card .tc-bar { background: #d0d7de; }
       body.light-mode #tour-card .tc-quote { border-left-color: #d0d7de; }
       #tour-card .tc-bar > div { height: 100%; background: #1f6feb; transition: width .3s ease; }
       #tour-card .tc-head { display: flex; align-items: center; justify-content: space-between;
-        padding: 12px 18px 0 18px; font-size: 10px; color: #8b949e;
+        padding: 8px 18px 0 18px; font-size: 10px; color: #8b949e;
         text-transform: uppercase; letter-spacing: .12em; }
       #tour-card .tc-head button { background: none; border: none; color: #8b949e; cursor: pointer; font-size: 12px; padding: 0; }
       #tour-card .tc-head button:hover { color: #e6edf3; }
@@ -2822,6 +2823,10 @@
           top = (r.top - ch - 10 > 8) ? r.top - ch - 10 : Math.min(r.bottom + 10, innerHeight - ch - 8);
           left = Math.max(8, Math.min(r.left - pad, innerWidth - cw - 8));
         }
+        // Never squat on the footer controls — the input row must stay usable.
+        const foot = document.querySelector('footer');
+        if (foot) top = Math.min(top, foot.getBoundingClientRect().top - ch - 8);
+        top = Math.max(8, top);
         card.style.top = top + 'px'; card.style.left = left + 'px';
       } else {
         hole.style.display = ring.style.display = 'none';
