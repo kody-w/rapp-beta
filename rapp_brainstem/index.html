@@ -1877,7 +1877,10 @@
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     if (role === 'assistant' && typeof marked !== 'undefined') {
-      bubble.innerHTML = sanitizeHtml(marked.parse(text));
+      // Models often emit \u2022 bullets, which markdown doesn't treat as list
+      // markers — the lines collapse into one run-on paragraph. Normalize them.
+      const md = text.replace(/^([ \t]*)[\u2022\u2023\u25AA\u25CF]\s+/gm, '$1- ');
+      bubble.innerHTML = sanitizeHtml(marked.parse(md));
       bubble.querySelectorAll('a').forEach(a => a.target = '_blank');
     } else {
       bubble.textContent = text;
