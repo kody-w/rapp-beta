@@ -8,8 +8,10 @@ import shutil
 import tempfile
 import unittest
 
-# Ensure brainstem dir is importable
-BRAINSTEM_DIR = os.path.dirname(os.path.abspath(__file__))
+# Ensure brainstem dir is importable. This test lives in rapp_brainstem/tests/,
+# so the brainstem package dir (holding brainstem.py, soul.md, soul_defaults.sha256)
+# is the PARENT directory.
+BRAINSTEM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BRAINSTEM_DIR not in sys.path:
     sys.path.insert(0, BRAINSTEM_DIR)
 
@@ -819,14 +821,17 @@ class TestSoulDefaultsManifest(unittest.TestCase):
     """The upgrade-time 'refresh unmodified default soul' feature (issue #40).
 
     install.sh / install.ps1 only refresh an installed soul.md if its NORMALIZED
-    hash is listed in rapp_brainstem/soul_defaults.sha256 (an unmodified historical
-    default). This self-enforcement test makes a soul edit without regenerating the
-    manifest fail CI: it asserts the manifest contains the normalized hash of the
-    default soul this checkout ships. Regenerate with `bash tests/gen_soul_hashes.sh`.
+    hash is listed in rapp_brainstem/tests/soul_defaults.sha256 (an unmodified
+    historical default). This self-enforcement test makes a soul edit without
+    regenerating the manifest fail CI: it asserts the manifest contains the normalized
+    hash of the default soul this checkout ships. Regenerate with
+    `bash tests/gen_soul_hashes.sh`.
     """
 
+    # soul.md is the shipped engine default (rapp_brainstem/ root); the manifest + hasher
+    # are soul-refresh tooling that lives here in tests/ (root stays grail).
     SOUL = os.path.join(BRAINSTEM_DIR, "soul.md")
-    MANIFEST = os.path.join(BRAINSTEM_DIR, "soul_defaults.sha256")
+    MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soul_defaults.sha256")
 
     def _manifest_hashes(self):
         hashes = set()
@@ -864,7 +869,7 @@ class TestSoulDefaultsManifest(unittest.TestCase):
         self.assertTrue(os.path.isfile(self.SOUL), "rapp_brainstem/soul.md missing")
         self.assertTrue(
             os.path.isfile(self.MANIFEST),
-            "rapp_brainstem/soul_defaults.sha256 missing — run tests/gen_soul_hashes.sh",
+            "rapp_brainstem/tests/soul_defaults.sha256 missing — run tests/gen_soul_hashes.sh",
         )
 
     def test_current_soul_hash_is_in_manifest(self):

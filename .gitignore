@@ -1,5 +1,7 @@
 rapp-deployment-outputs.json
 rapp_brainstem/.copilot_token
+rapp_brainstem/.copilot_session
+rapp_brainstem/.brainstem_secret
 rapp_brainstem/.env
 rapp_brainstem/.brainstem_data/
 rapp_brainstem/.remote_agents/

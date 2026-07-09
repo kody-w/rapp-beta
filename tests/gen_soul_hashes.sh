@@ -19,8 +19,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOUL_REL="rapp_brainstem/soul.md"
-HASHER="$REPO_ROOT/rapp_brainstem/soul_hash.py"
-OUT="$REPO_ROOT/rapp_brainstem/soul_defaults.sha256"
+HASHER="$REPO_ROOT/rapp_brainstem/tests/soul_hash.py"
+OUT="$REPO_ROOT/rapp_brainstem/tests/soul_defaults.sha256"
 PY="${PYTHON:-python3}"
 
 cd "$REPO_ROOT"

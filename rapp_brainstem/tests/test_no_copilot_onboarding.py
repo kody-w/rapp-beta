@@ -19,7 +19,8 @@ import json
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# This test lives in rapp_brainstem/tests/ — brainstem.py is in the parent dir.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import brainstem  # noqa: E402
 

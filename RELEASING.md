@@ -35,7 +35,7 @@ Never commit to `main`. Never push to `main` except the release merge (step 6).
 
 ```bash
 cd rapp_brainstem
-~/.brainstem/venv/bin/python -m pytest test_local_agents.py test_model_selection.py -q
+~/.brainstem/venv/bin/python -m pytest tests/ -q
 bash -n ../install.sh && bash ../tests/test_installer.sh
 ```
 

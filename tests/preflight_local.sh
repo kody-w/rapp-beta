@@ -153,12 +153,24 @@ fi
 # ── 6b. Optional: real token for an end-to-end /chat test ────────────────────
 # Seeded post-install (the server reads auth lazily, per request, so this works).
 if [ "$AUTH" = true ]; then
+    # Token files are gitignored, so a clean checkout has none in the repo (issue #37).
+    # Source from the repo working tree if present, else the REAL install at
+    # ~/.brainstem/src/rapp_brainstem (where a device-code login actually persists them).
+    _auth_copied=false
     for f in .copilot_token .copilot_session; do
-        if [ -f "$REPO_ROOT/rapp_brainstem/$f" ]; then
-            cp "$REPO_ROOT/rapp_brainstem/$f" "$FAKE_HOME/.brainstem/src/rapp_brainstem/$f"
-        fi
+        for src in "$REPO_ROOT/rapp_brainstem/$f" "$HOME/.brainstem/src/rapp_brainstem/$f"; do
+            if [ -f "$src" ]; then
+                cp "$src" "$FAKE_HOME/.brainstem/src/rapp_brainstem/$f"
+                _auth_copied=true
+                break
+            fi
+        done
     done
-    echo "  ✓ copied real Copilot token into sandbox (stays inside $SANDBOX)"
+    if [ "$_auth_copied" = true ]; then
+        echo "  ✓ copied real Copilot token into sandbox (stays inside $SANDBOX)"
+    else
+        echo "  ⚠ --auth requested but no .copilot_token found (repo tree or ~/.brainstem) — skipping the authenticated /chat probe"
+    fi
 fi
 
 PASS=0; FAIL=0
@@ -212,7 +224,7 @@ fi
 if "$FAKE_HOME/.brainstem/venv/bin/python" -m pytest --version >/dev/null 2>&1 || \
    "$FAKE_HOME/.brainstem/venv/bin/pip" install -q pytest >/dev/null 2>&1; then
     if (cd "$FAKE_HOME/.brainstem/src/rapp_brainstem" && \
-        "$FAKE_HOME/.brainstem/venv/bin/python" -m pytest test_local_agents.py test_model_selection.py -q >"$SANDBOX/pytest.log" 2>&1); then
+        "$FAKE_HOME/.brainstem/venv/bin/python" -m pytest tests/ -q >"$SANDBOX/pytest.log" 2>&1); then
         ok "unit suite green inside the installed copy ($(tail -1 "$SANDBOX/pytest.log"))"
     else
         bad "unit suite failed inside installed copy — see $SANDBOX/pytest.log"

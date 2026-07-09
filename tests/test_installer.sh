@@ -299,9 +299,9 @@ echo ""
 
 # ── unit tests ────────────────────────────────────────────────────────────────
 
-echo "--- unit tests (test_local_agents.py) ---"
+echo "--- unit tests (tests/) ---"
 cd "$REPO_ROOT/rapp_brainstem"
-if python3 -m pytest test_local_agents.py -x --tb=short -q 2>&1; then
+if python3 -m pytest tests/ -x --tb=short -q 2>&1; then
     pass "unit tests passed"
 else
     fail "unit tests failed"
