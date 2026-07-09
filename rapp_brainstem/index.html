@@ -1318,6 +1318,9 @@
     const open = p.classList.toggle('open');
     if (open) {
       loadRarRegistry();  // warm the cache so the first search is instant
+      // A transient fetch failure shouldn't stick for the session — retry
+      // the browse view whenever the panel reopens without a loaded registry.
+      if (!rarRegistry) loadFeatured();
       document.getElementById('rar-search-input').focus();
     }
   }
@@ -1409,6 +1412,20 @@
   // Search a public catalog of agents and hot-load any of them into this
   // brainstem by fetching the raw .py and POSTing it to /agents/import.
   const RAR_BASE = 'https://raw.githubusercontent.com/kody-w/RAR/main';
+  // Same static files via the jsdelivr CDN mirror — used only when raw
+  // rate-limits (HTTP 429) or hiccups. Plain file hosting, no API.
+  const RAR_MIRROR = 'https://cdn.jsdelivr.net/gh/kody-w/RAR@main';
+  async function rarFetch(path) {
+    try {
+      const r = await rarFetch(path);
+      if (r.ok) return r;
+      throw new Error('HTTP ' + r.status);
+    } catch (e) {
+      const r = await fetch(encodeURI(`${RAR_MIRROR}/${path}`));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r;
+    }
+  }
   let rarRegistry = null;     // cached agents array (lazy-loaded on first search)
   let rarLoading = null;      // in-flight promise, to dedupe concurrent loads
   let rarSearchTimer = null;
@@ -1424,8 +1441,8 @@
   function loadRarRegistry() {
     if (rarRegistry) return Promise.resolve(rarRegistry);
     if (rarLoading) return rarLoading;
-    rarLoading = fetch(`${RAR_BASE}/registry.json`)
-      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    rarLoading = rarFetch('registry.json')
+      .then(r => r.json())
       .then(data => {
         rarRegistry = (Array.isArray(data.agents) ? data.agents : []).filter(isLoadableAgent);
         return rarRegistry;
@@ -1632,7 +1649,7 @@
     btn.textContent = 'Adding…';
     try {
       // encodeURI preserves '/' and '@' (used in scope dirs) while escaping spaces.
-      const r = await fetch(encodeURI(`${RAR_BASE}/${path}`));
+      const r = await rarFetch(path);
       if (!r.ok) throw new Error('download failed (HTTP ' + r.status + ')');
       const code = await r.text();
       const fd = new FormData();
