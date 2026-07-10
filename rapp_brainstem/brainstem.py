@@ -28,7 +28,10 @@ import secrets
 import hmac
 import functools
 import tempfile
+import ipaddress
+import hashlib
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import requests
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -47,6 +50,27 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 load_dotenv()
+
+
+def _env_enabled(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Localhost is the secure default. LAN exposure must be explicitly enabled, and
+# capability-bearing routes still require the per-install secret for non-loopback
+# callers. Named LAN hosts must also be explicitly allowlisted; private IP literals
+# are accepted automatically while LAN mode is enabled.
+LAN_MODE = _env_enabled("BRAINSTEM_LAN_MODE")
+BIND_HOST = "0.0.0.0" if LAN_MODE else "127.0.0.1"
+_ALLOWED_HOSTS = {"localhost"}
+_ALLOWED_HOSTS.update(
+    host.strip().lower()
+    for host in os.getenv("BRAINSTEM_ALLOWED_HOSTS", "").split(",")
+    if host.strip()
+)
 
 # No static route: Flask's default static handler would otherwise serve the whole
 # brainstem directory (including .env with GITHUB_TOKEN, .copilot_token, etc.) over
@@ -140,6 +164,33 @@ def _is_foreign_browser_request():
 
 
 @app.before_request
+def _reject_untrusted_host():
+    """Reject attacker-controlled Host values before loopback exemptions run.
+
+    A DNS-rebound page keeps its public hostname while resolving to 127.0.0.1. If
+    that hostname were accepted, its Origin would match request.host_url and the
+    request would look same-origin. Restricting Host to loopback, explicit names,
+    and (only in LAN mode) private IP literals closes that path.
+    """
+    try:
+        hostname = (urlsplit(f"//{request.host}").hostname or "").lower()
+    except ValueError:
+        hostname = ""
+    if hostname in _ALLOWED_HOSTS:
+        return None
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address and (address.is_loopback or (LAN_MODE and (address.is_private or address.is_link_local))):
+        return None
+    return jsonify({
+        "error": "Invalid Host header. Use localhost, a loopback address, or an "
+                 "explicitly configured LAN host.",
+    }), 400
+
+
+@app.before_request
 def _reject_cross_origin_unsafe_request():
     """Block browser CSRF against loopback while preserving non-browser LAN APIs."""
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
@@ -172,6 +223,19 @@ def _require_secret(fn):
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _atomic_replace_lock = threading.Lock()
+
+
+def _harden_private_file(path):
+    """Repair permissive modes left by older installers on POSIX."""
+    if os.name != "posix" or not os.path.exists(path):
+        return
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+_harden_private_file(os.path.join(_BASE_DIR, ".env"))
 
 def _resolve_under_base(value, default_name):
     """Resolve a SOUL_PATH/AGENTS_PATH setting. A relative value (the shipped
@@ -211,6 +275,10 @@ COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
 # Where the in-app "Get Help" flow files issues. Users' help requests go to the
 # support repo, keeping the engineering tracker (this repo) clean.
 SUPPORT_REPO = "kody-w/rapp-support"
+# Immutable RAR release used by the built-in catalog. The browser verifies each
+# downloaded agent against the registry's SHA-256, and the import route verifies
+# the same digest before writing or importing any bytes.
+RAR_REVISION = "241c6191736a856b6837ef2398447a25710b8d72"
 
 
 def _atomic_write_json(path, data):
@@ -639,6 +707,7 @@ def _load_or_create_secret():
         return BRAINSTEM_SECRET
     try:
         if os.path.exists(_secret_file):
+            _harden_private_file(_secret_file)
             with open(_secret_file, encoding="utf-8") as f:
                 existing = f.read().strip()
             if existing:
@@ -669,6 +738,7 @@ def _read_token_file():
     if not os.path.exists(_token_file):
         return None
     try:
+        _harden_private_file(_token_file)
         with open(_token_file, encoding="utf-8") as f:
             raw = f.read().strip()
         if not raw:
@@ -786,6 +856,7 @@ def _load_copilot_cache():
     if not os.path.exists(_copilot_cache_file):
         return None
     try:
+        _harden_private_file(_copilot_cache_file)
         with open(_copilot_cache_file, encoding="utf-8") as f:
             data = json.load(f)
         if data.get("token") and time.time() < data.get("expires_at", 0) - 60:
@@ -1002,6 +1073,7 @@ def _load_pending_login():
     if not os.path.exists(_pending_login_file):
         return
     try:
+        _harden_private_file(_pending_login_file)
         with open(_pending_login_file, encoding="utf-8") as f:
             data = json.load(f)
         if data.get("device_code") and time.time() < data.get("expires_at", 0):
@@ -1169,17 +1241,21 @@ _soul_cache = None
 
 def load_soul():
     global _soul_cache
-    if _soul_cache is not None:
-        return _soul_cache
     if not os.path.exists(SOUL_PATH):
+        _soul_cache = None
         # Don't cache the fallback: the user may create soul.md after startup, and the
         # next request should pick it up without needing a restart.
         print(f"[brainstem] Warning: soul file not found at {SOUL_PATH}, using default.")
         return "You are a helpful AI assistant."
+    stat = os.stat(SOUL_PATH)
+    signature = (SOUL_PATH, stat.st_mtime_ns, stat.st_size)
+    if isinstance(_soul_cache, dict) and _soul_cache.get("signature") == signature:
+        return _soul_cache["content"]
     with open(SOUL_PATH, "r", encoding="utf-8") as f:
-        _soul_cache = f.read().strip()
+        content = f.read().strip()
+    _soul_cache = {"signature": signature, "content": content}
     print(f"[brainstem] Soul loaded: {SOUL_PATH}")
-    return _soul_cache
+    return content
 
 # ── Agent loader ──────────────────────────────────────────────────────────────
 
@@ -1830,6 +1906,7 @@ def _validate_conversation_history(value):
     return value, None
 
 @app.route("/chat", methods=["POST"])
+@_require_secret
 def chat():
     # silent=True → malformed JSON yields None (a clean JSON 400 below) instead of
     # Werkzeug's HTML 400, which the web UI can't parse.
@@ -1995,22 +2072,12 @@ def chat():
 #   {"type":"done", response, agent_logs, session_id, model, requested_model, streamed, ...}
 #   {"type":"error","error":"..."}   fatal; the stream ends
 
-@app.route("/chat/stream", methods=["GET", "POST"])
+@app.route("/chat/stream", methods=["POST"])
+@_require_secret
 def chat_stream():
-    # Accept POST JSON (the web UI) or GET query params (curl / EventSource).
-    if request.method == "POST":
-        data = request.get_json(force=True, silent=True)
-        if not isinstance(data, dict):
-            data = {}
-    else:
-        data = {
-            "user_input": request.args.get("user_input", ""),
-            "session_id": request.args.get("session_id"),
-        }
-        try:
-            data["conversation_history"] = json.loads(request.args.get("conversation_history", "[]"))
-        except Exception:
-            data["conversation_history"] = []
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        data = {}
 
     user_input = data.get("user_input", "")
     if not isinstance(user_input, str):
@@ -2359,6 +2426,7 @@ def login_retry():
         return jsonify({"status": "error", "error": "Couldn't reach GitHub Copilot. Try again shortly."})
 
 @app.route("/models", methods=["GET"])
+@_require_secret
 def list_models():
     """List available models and current selection. Fetches from Copilot API on first call."""
     _fetch_copilot_models()
@@ -2390,6 +2458,7 @@ def set_model():
     return jsonify({"model": MODEL})
 
 @app.route("/voice", methods=["GET"])
+@_require_secret
 def voice_status():
     """Get voice mode status."""
     return jsonify({"voice_mode": VOICE_MODE})
@@ -2611,8 +2680,20 @@ def agents_import():
             "error": "basic_agent.py is the shared base class and cannot be replaced.",
         }), 400
         
+    payload = f.read()
+    expected_sha256 = (request.form.get("sha256") or "").strip().lower()
+    source_revision = (request.form.get("source_revision") or "").strip().lower()
+    if source_revision and source_revision != RAR_REVISION:
+        return jsonify({"error": "RAR source revision is not trusted by this brainstem release."}), 400
+    if expected_sha256:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            return jsonify({"error": "Invalid SHA-256 digest."}), 400
+        actual_sha256 = hashlib.sha256(payload).hexdigest()
+        if not hmac.compare_digest(actual_sha256, expected_sha256):
+            return jsonify({"error": "Agent integrity check failed; the downloaded bytes do not match the RAR catalog."}), 400
+
     filepath = os.path.join(AGENTS_PATH, safe_name)
-    _atomic_write_bytes(filepath, f.read())
+    _atomic_write_bytes(filepath, payload)
 
     # load_agents() swallows per-file errors (returns {} for a broken file), so it
     # can't tell us whether THIS upload actually works. Load just this file and report
@@ -2629,6 +2710,7 @@ def agents_import():
     return jsonify({"status": "ok", "message": f"Agent {safe_name} imported successfully."})
 
 @app.route("/health", methods=["GET"])
+@_require_secret
 def health():
     agents = {}
     try:
@@ -2906,7 +2988,8 @@ def diagnostics_report():
 if __name__ == "__main__":
     _tlog_load()  # Restore previous flight log
     _start_tlog_autosave()
-    _tlog("server.starting", {"version": VERSION, "model": MODEL, "port": PORT})
+    _tlog("server.starting", {"version": VERSION, "model": MODEL, "port": PORT,
+                              "lan_mode": LAN_MODE, "bind_host": BIND_HOST})
     print(f"\n🧠 RAPP Brainstem v{VERSION} starting on http://localhost:{PORT}")
     # If auth is already available (gh CLI / env / cached token), fetch the real
     # catalog now so MODEL reflects the auto-selected Haiku in the banner below.
@@ -2926,7 +3009,11 @@ if __name__ == "__main__":
     agents = load_agents()
     _tlog("server.agents_loaded", {"agents": list(agents.keys())})
     _load_pending_login()  # Resume any in-progress device code login
-    _load_or_create_secret()  # Generate + print the LAN access secret once on first run
+    if LAN_MODE:
+        _load_or_create_secret()  # Generate + print the LAN access secret for LAN API clients
+        print("   LAN:    enabled; non-loopback API calls require X-Brainstem-Secret")
+    else:
+        print("   LAN:    disabled (set BRAINSTEM_LAN_MODE=true to opt in)")
     _tlog("server.ready", {"url": f"http://localhost:{PORT}"})
 
     # HTTPServer.server_bind reverse-DNS-resolves the bind address between bind()
@@ -2948,4 +3035,4 @@ if __name__ == "__main__":
     # threaded=True so an in-flight SSE stream (/chat/stream) doesn't block the
     # UI's concurrent /health polls or a second request. Non-streaming /chat is
     # unaffected. Werkzeug's threaded dev server is fine for this local-first rig.
-    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
+    app.run(host=BIND_HOST, port=PORT, debug=False, threaded=True)

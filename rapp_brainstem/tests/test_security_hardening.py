@@ -228,6 +228,61 @@ def test_cross_site_sensitive_get_blocked_on_loopback(client, monkeypatch):
     assert r.status_code == 403
 
 
+@pytest.mark.parametrize("path", ["/chat", "/chat/stream"])
+def test_chat_routes_block_lan_without_secret(client, monkeypatch, path):
+    monkeypatch.setattr(bs, "BRAINSTEM_SECRET", "unit-test-secret")
+    r = client.post(
+        path,
+        json={"user_input": ""},
+        environ_overrides={"REMOTE_ADDR": "192.168.1.50"},
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.parametrize("path", ["/chat", "/chat/stream"])
+def test_chat_routes_allow_lan_with_secret(client, monkeypatch, path):
+    monkeypatch.setattr(bs, "BRAINSTEM_SECRET", "unit-test-secret")
+    r = client.post(
+        path,
+        json={"user_input": ""},
+        headers={"X-Brainstem-Secret": "unit-test-secret"},
+        environ_overrides={"REMOTE_ADDR": "192.168.1.50"},
+    )
+    assert r.status_code == 400
+
+
+def test_matching_untrusted_host_and_origin_are_rejected(client):
+    r = client.get(
+        "/diagnostics",
+        headers={"Host": "attacker.example", "Origin": "http://attacker.example"},
+        environ_overrides={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert r.status_code == 400
+
+
+def test_stream_get_is_method_not_allowed(client):
+    r = client.get("/chat/stream")
+    assert r.status_code == 405
+
+
+def test_agent_import_rejects_digest_mismatch(client, monkeypatch, tmp_path):
+    from io import BytesIO
+
+    monkeypatch.setattr(bs, "AGENTS_PATH", str(tmp_path))
+    r = client.post(
+        "/agents/import",
+        data={
+            "file": (BytesIO(b"print('untrusted')\n"), "catalog_agent.py"),
+            "sha256": "0" * 64,
+            "source_revision": bs.RAR_REVISION,
+        },
+        content_type="multipart/form-data",
+    )
+    assert r.status_code == 400
+    assert "integrity" in r.get_json()["error"].lower()
+    assert not (tmp_path / "catalog_agent.py").exists()
+
+
 # ── #4 MEDIUM: request size cap configured ─────────────────────────────────────
 
 def test_max_content_length_configured():

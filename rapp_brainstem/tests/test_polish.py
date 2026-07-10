@@ -51,6 +51,17 @@ def test_rar_browser_uses_collision_safe_install_filename():
     assert "filename.includes('/')" in helper
 
 
+def test_rar_browser_pins_and_verifies_catalog_agents():
+    index = open(os.path.join(bs._BASE_DIR, "index.html"), encoding="utf-8").read()
+    registry = index[index.index("const RAR_REVISION"):index.index("async function copyDeviceCode")]
+    assert bs.RAR_REVISION in registry
+    assert "RAR/main" not in registry and "RAR@main" not in registry
+    assert "agent._sha256" in registry
+    assert "crypto.subtle.digest('SHA-256'" in registry
+    assert "actualDigest !== expectedDigest" in registry
+    assert "This executes Python code on your machine" in registry
+
+
 def test_stream_fallback_stops_after_response_is_accepted():
     index = open(os.path.join(bs._BASE_DIR, "index.html"), encoding="utf-8").read()
     send = index[index.index("async function sendMessage"):index.index("async function sendViaPost")]
@@ -59,6 +70,45 @@ def test_stream_fallback_stops_after_response_is_accepted():
     assert "streamed = true" in send
     assert "responseAccepted = true" in stream
     assert "err.streamAccepted = true" in stream
+
+
+def test_client_request_lifecycle_supports_stop_and_stale_response_ownership():
+    index = open(os.path.join(bs._BASE_DIR, "index.html"), encoding="utf-8").read()
+    send = index[index.index("function handleSendButton"):index.index("// ── Voice")]
+    actions = index[index.index("function clearChat"):index.index("// ══")]
+    assert "new AbortController()" in send
+    assert "signal: requestState.controller.signal" in send
+    assert "requestState.epoch !== conversationEpoch" in send
+    assert "controller.abort()" in send
+    assert "requestState.controller.signal.aborted" in send
+    assert "addEventListener('abort', finishDrain" in send
+    assert "conversationEpoch += 1" in actions
+    assert "cancelActiveRequest(true)" in actions
+
+
+def test_stream_entitlement_error_uses_structured_banner_path():
+    index = open(os.path.join(bs._BASE_DIR, "index.html"), encoding="utf-8").read()
+    send = index[index.index("async function sendMessage"):index.index("// ── Voice")]
+    assert "evt.no_copilot_access" in send
+    assert "err.noCopilotAccess" in send
+    assert "appendNoCopilotMessage(err.copilotUsername)" in send
+
+
+def test_mobile_long_responses_use_full_chat_width():
+    index = open(os.path.join(bs._BASE_DIR, "index.html"), encoding="utf-8").read()
+    assert "calc(100vw - 180px)" not in index
+    assert ".msg.wide { width: 100%; max-width: 100%; }" in index
+
+
+def test_core_chat_controls_have_accessible_semantics():
+    index = open(os.path.join(bs._BASE_DIR, "index.html"), encoding="utf-8").read()
+    assert 'role="dialog" aria-modal="true"' in index
+    assert 'id="chat" role="log" aria-live="polite"' in index
+    assert 'id="model-select" aria-label="Model"' in index
+    assert 'id="input" rows="1" aria-label="Message"' in index
+    logs = index[index.index("if (logs)"):index.index("function appendTyping")]
+    assert "document.createElement('button')" in logs
+    assert "aria-expanded" in logs
 
 
 def test_launchers_probe_all_runtime_dependencies_and_use_python_m_pip():
@@ -70,6 +120,7 @@ def test_launchers_probe_all_runtime_dependencies_and_use_python_m_pip():
         assert "-m pip" in launcher
     assert "$managedPython" in powershell
     assert "@($env:Path, $machinePath, $userPath)" in powershell
+    assert "chmod 600 .env" in shell
 
 
 # ── /chat input validation always returns JSON (never an HTML 400/500) ─────────
@@ -252,3 +303,32 @@ def test_context_memory_tolerates_corrupt_store(tmp_path, monkeypatch):
         f.write("[1, 2, 3]")     # a JSON array, not the expected object
     out = ctx.perform(full_recall=True)   # must not raise
     assert isinstance(out, str)
+
+
+def test_context_memory_system_prompt_is_bounded_and_marks_data_untrusted(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_storage, "_DATA_DIR", str(tmp_path))
+    agents_dir = os.path.join(bs._BASE_DIR, "agents")
+    ctx = bs._load_agent_from_file(os.path.join(agents_dir, "context_memory_agent.py"))["ContextMemory"]
+    ctx.storage_manager.write_json({
+        str(index): {
+            "message": "x" * 2000,
+            "theme": "fact",
+            "date": "2026-07-09",
+            "time": f"00:00:{index:02d}",
+        }
+        for index in range(60)
+    })
+    prompt = ctx.system_context()
+    assert len(prompt) < 13000
+    assert "untrusted user data" in prompt
+
+
+def test_soul_reloads_when_file_changes(tmp_path, monkeypatch):
+    soul = tmp_path / "soul.md"
+    soul.write_text("first soul", encoding="utf-8")
+    monkeypatch.setattr(bs, "SOUL_PATH", str(soul))
+    monkeypatch.setattr(bs, "_soul_cache", None)
+    assert bs.load_soul() == "first soul"
+
+    soul.write_text("second soul with a different size", encoding="utf-8")
+    assert bs.load_soul() == "second soul with a different size"

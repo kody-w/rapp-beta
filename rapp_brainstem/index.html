@@ -162,6 +162,7 @@
     background: #0d1117;
     color: #e6edf3;
     height: 100vh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
   }
@@ -333,7 +334,7 @@
   }
   /* Long replies earn the lateral whitespace: widen instead of forcing a
      scroll through a skinny column. Capped for line-length readability. */
-  .msg.wide { max-width: min(1200px, calc(100vw - 180px)); }
+  .msg.wide { max-width: min(1200px, calc(100vw - 48px)); }
   .msg.wide .bubble { max-width: 100%; }
   .msg.assistant .bubble {
     background: #161b22; border: 1px solid #21262d;
@@ -418,6 +419,7 @@
     font-family: "SF Mono", monospace;
     text-transform: uppercase; letter-spacing: 0.5px;
     cursor: pointer; user-select: none;
+    border: none; width: 100%; text-align: left;
   }
   .logs-label:hover { background: #161b22; color: #e6edf3; }
   .logs-label .arrow { transition: transform 0.2s; font-size: 8px; }
@@ -478,6 +480,8 @@
   }
   #send:hover { background: #388bfd; }
   #send:disabled { opacity: 0.4; cursor: default; }
+  #send.stop { background: #da3633; }
+  #send.stop:hover { background: #f85149; }
 
   .toolbar-row {
     display: flex; justify-content: space-between; align-items: center;
@@ -890,6 +894,8 @@
     header { padding: 10px 14px; }
     #model-select { max-width: 44vw; }
     #chat, footer { padding-left: 14px; padding-right: 14px; }
+    .msg.wide { width: 100%; max-width: 100%; }
+    .msg.wide > div:last-child { flex: 1; min-width: 0; }
   }
   /* Consistent keyboard-focus ring across interactive chrome (accessibility). */
   .icon-btn:focus-visible, #model-select:focus-visible, #send:focus-visible,
@@ -943,13 +949,13 @@
   Drop .py agent file to install
 </div>
 
-<div id="login-overlay" style="display:none">
+<div id="login-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="login-title">
   <div class="login-card">
     <a href="#" onclick="dismissLogin(); return false;" style="position:absolute;top:12px;right:16px;color:#8b949e;font-size:18px;text-decoration:none;line-height:1" title="Dismiss">&times;</a>
     <div class="login-icon">
       <span class="icon icon-xl"><svg viewBox="0 0 24 24"><path d="M13 3C9.2 3 6.2 5.9 6 9.7L4.1 12.6c-.3.5.1 1.1.7 1.1H6v3c0 1.1.9 2 2 2h1v3h7v-4.9c2.8-1.5 5-4.8 5-8.1 0-5-4.5-8-8-5zM9.5 9C8.7 9 8 8.3 8 7.5S8.7 6 9.5 6s1.5.7 1.5 1.5S10.3 9 9.5 9zm5 0c-.8 0-1.5-.7-1.5-1.5S13.7 6 14.5 6s1.5.7 1.5 1.5S15.3 9 14.5 9z"/></svg></span>
     </div>
-    <h2>RAPP Brainstem</h2>
+    <h2 id="login-title">RAPP Brainstem</h2>
     <p>Sign in with your GitHub account to use Copilot AI.</p>
     <div id="login-step1">
       <button class="login-btn" onclick="startLogin()">Sign in with GitHub</button>
@@ -987,8 +993,8 @@
   <h1>RAPP Brainstem <span id="version-tag" style="font-size:11px;font-weight:400;color:#8b949e;vertical-align:middle"></span></h1>
   <div class="controls">
     <div class="dot" id="dot"></div>
-    <span id="status-text">checking...</span>
-    <select id="model-select" onchange="changeModel(this.value)"></select>
+    <span id="status-text" role="status" aria-live="polite">checking...</span>
+    <select id="model-select" aria-label="Model" onchange="changeModel(this.value)"></select>
 
     <button class="icon-btn" id="theme-btn" onclick="toggleTheme()" title="Toggle Light/Dark Mode">
       <span class="icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0a.996.996 0 000-1.41l-1.06-1.06zm1.06-10.96a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z"/></svg></span>
@@ -1106,7 +1112,7 @@
   </div>
 </header>
 
-<div id="chat">
+<div id="chat" role="log" aria-live="polite" aria-relevant="additions text">
   <!-- Subtle Drop Watermark -->
   <div id="chat-watermark">
     Drag & Drop .py Agents Here
@@ -1152,8 +1158,8 @@
     </div>
   </div>
   <div class="input-row">
-    <textarea id="input" rows="1" placeholder="Message brainstem..." autocomplete="off"></textarea>
-    <button id="send" onclick="sendMessage()">Send</button>
+    <textarea id="input" rows="1" aria-label="Message" placeholder="Message brainstem..." autocomplete="off"></textarea>
+    <button id="send" onclick="handleSendButton()" aria-label="Send message">Send</button>
   </div>
 </footer>
 
@@ -1233,6 +1239,9 @@
   let sessionId = null;
   let history = [];
   let fullTranscript = [];
+  let activeRequest = null;
+  let conversationEpoch = 0;
+  let logDisclosureId = 0;
   let devMode = safeGet('brainstem_dev') === 'true';
   if (devMode) document.body.classList.add('dev-mode');
 
@@ -1375,6 +1384,7 @@
     document.getElementById('login-step3').style.display = 'none';
     document.querySelector('.login-btn').disabled = false;
     document.getElementById('login-overlay').style.display = 'flex';
+    requestAnimationFrame(() => document.querySelector('#login-overlay button, #login-overlay a')?.focus());
     // Check if server has a pending device code we can resume
     resumePendingLogin();
   }
@@ -1403,6 +1413,7 @@
 
   function hideLoginOverlay() {
     document.getElementById('login-overlay').style.display = 'none';
+    document.getElementById('input')?.focus();
   }
 
   // ── Copilot-access banner ──
@@ -1421,6 +1432,15 @@
   function hideCopilotBanner() {
     const b = document.getElementById('copilot-banner');
     if (b) b.style.display = 'none';
+  }
+  function appendNoCopilotMessage(username) {
+    username = username || 'this account';
+    showCopilotBanner(username);
+    const wrap = appendMsg('system', '');
+    setChildren(wrap.querySelector('.bubble'), [
+      strong(username), ' doesn\'t have GitHub Copilot access yet. Enable Copilot on your account, then ',
+      actionLink('Retry', 'color:#58a6ff', function () { retryCopilot(); }), ' — no need to sign in again.'
+    ]);
   }
   // Re-run the exchange with the existing token. `statusElId` lets the login overlay
   // reuse this to report into its own status line; defaults to the banner text.
@@ -1747,10 +1767,11 @@
   // ── RAR Registry Browser ──
   // Search a public catalog of agents and hot-load any of them into this
   // brainstem by fetching the raw .py and POSTing it to /agents/import.
-  const RAR_BASE = 'https://raw.githubusercontent.com/kody-w/RAR/main';
+  const RAR_REVISION = '241c6191736a856b6837ef2398447a25710b8d72';
+  const RAR_BASE = `https://raw.githubusercontent.com/kody-w/RAR/${RAR_REVISION}`;
   // Same static files via the jsdelivr CDN mirror — used only when raw
   // rate-limits (HTTP 429) or hiccups. Plain file hosting, no API.
-  const RAR_MIRROR = 'https://cdn.jsdelivr.net/gh/kody-w/RAR@main';
+  const RAR_MIRROR = `https://cdn.jsdelivr.net/gh/kody-w/RAR@${RAR_REVISION}`;
   async function rarFetch(path) {
     try {
       const r = await fetch(encodeURI(`${RAR_BASE}/${path}`));
@@ -1771,7 +1792,16 @@
   // or scope-prefixed @ filenames) — none of those import cleanly, so drop them here.
   function isLoadableAgent(a) {
     const base = (a && a._file ? a._file : '').replace(/\\/g, '/').split('/').pop();
-    return base.endsWith('_agent.py') && base !== 'basic_agent.py' && !base.startsWith('@');
+    return base.endsWith('_agent.py') && base !== 'basic_agent.py' && !base.startsWith('@')
+      && /^[0-9a-f]{64}$/i.test(a._sha256 || '');
+  }
+
+  async function sha256Hex(bytes) {
+    if (!window.crypto || !window.crypto.subtle) {
+      throw new Error('This browser cannot verify agent integrity. Open the brainstem on localhost in a modern browser.');
+    }
+    const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
   }
 
   function loadRarRegistry() {
@@ -1980,8 +2010,16 @@
     const path = agent._file;
     if (!path) { alert('This registry entry has no file path.'); return; }
     const filename = agent._install_filename || path.replace(/\\/g, '/').split('/').pop();
+    const expectedDigest = (agent._sha256 || '').toLowerCase();
     if (!filename.endsWith('_agent.py') || filename.includes('/') || filename.includes('\\')) {
       alert('This registry entry has an invalid install filename.');
+      return;
+    }
+    if (!/^[0-9a-f]{64}$/.test(expectedDigest)) {
+      alert('This registry entry has no valid SHA-256 digest and cannot be installed.');
+      return;
+    }
+    if (!confirm(`Install ${filename}?\n\nThis executes Python code on your machine. The source is pinned to RAR commit ${RAR_REVISION.slice(0, 12)} and its SHA-256 will be verified before installation.`)) {
       return;
     }
     const orig = btn.textContent;
@@ -1991,9 +2029,15 @@
       // encodeURI preserves '/' and '@' (used in scope dirs) while escaping spaces.
       const r = await rarFetch(path);
       if (!r.ok) throw new Error('download failed (HTTP ' + r.status + ')');
-      const code = await r.text();
+      const bytes = await r.arrayBuffer();
+      const actualDigest = await sha256Hex(bytes);
+      if (actualDigest !== expectedDigest) {
+        throw new Error('integrity check failed — downloaded bytes do not match the pinned RAR catalog');
+      }
       const fd = new FormData();
-      fd.append('file', new Blob([code], { type: 'text/x-python' }), filename);
+      fd.append('file', new Blob([bytes], { type: 'text/x-python' }), filename);
+      fd.append('sha256', expectedDigest);
+      fd.append('source_revision', RAR_REVISION);
       const res = await fetch(`${API}/agents/import`, { method: 'POST', body: fd });
       const data = await res.json();
       if (data.status === 'ok') {
@@ -2194,7 +2238,10 @@
     input.style.height = Math.min(input.scrollHeight, 120) + 'px';
   });
   input.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!activeRequest) sendMessage();
+    }
   });
 
   // ── Chat rendering ──
@@ -2325,7 +2372,8 @@
       const agentNames = [...new Set(
         [...logs.matchAll(/^\s*\[([^\]\n]+)\]/gm)].map(m => m[1].trim())
       )];
-      const label = document.createElement('div');
+      const label = document.createElement('button');
+      label.type = 'button';
       label.className = 'logs-label';
       // Build from DOM nodes: agentNames are scraped from tool output and must not be
       // interpolated into innerHTML.
@@ -2343,6 +2391,9 @@
       }
       const logBox = document.createElement('div');
       logBox.className = 'agent-logs collapsed';
+      logBox.id = `agent-logs-${++logDisclosureId}`;
+      label.setAttribute('aria-controls', logBox.id);
+      label.setAttribute('aria-expanded', 'false');
       // Agent results are often one giant JSON line — pretty-print each
       // "[Agent] {...}" payload so an opened thought is actually readable.
       logBox.textContent = logs.replace(/(\[[^\]\n]+\])\s*(\{[\s\S]*?\}|\[[\s\S]*?\])(?=\s*(?:\[[^\]\n]+\]|$))/g, (m, tag, body) => {
@@ -2352,6 +2403,7 @@
       label.onclick = () => {
         const opened = logBox.classList.toggle('collapsed') === false;
         label.querySelector('.arrow').classList.toggle('open');
+        label.setAttribute('aria-expanded', String(opened));
         // An expanded thought below the fold is invisible — bring it into view.
         if (opened) requestAnimationFrame(() =>
           logBox.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
@@ -2403,12 +2455,47 @@
   }
 
   // ── Send ──
+  function setSendActive(active) {
+    const send = document.getElementById('send');
+    send.disabled = false;
+    send.classList.toggle('stop', active);
+    send.textContent = active ? 'Stop' : 'Send';
+    send.setAttribute('aria-label', active ? 'Stop response' : 'Send message');
+  }
+
+  function handleSendButton() {
+    if (activeRequest) {
+      activeRequest.controller.abort();
+      const send = document.getElementById('send');
+      send.disabled = true;
+      send.textContent = 'Stopping...';
+      return;
+    }
+    sendMessage();
+  }
+
+  function cancelActiveRequest(silent) {
+    if (!activeRequest) return;
+    activeRequest.silentCancel = !!silent;
+    activeRequest.controller.abort();
+  }
+
+  function isAbortError(err, requestState) {
+    return !!(requestState.controller.signal.aborted || (err && err.name === 'AbortError'));
+  }
+
   async function sendMessage() {
-    // A request in flight disables the Send button, but the Enter-key handler would
-    // still fire and start an overlapping /chat that corrupts history order. Guard it.
-    if (document.getElementById('send').disabled) return;
+    if (activeRequest) return;
     const text = input.value.trim();
     if (!text) return;
+
+    const requestState = {
+      controller: new AbortController(),
+      epoch: conversationEpoch,
+      silentCancel: false,
+    };
+    activeRequest = requestState;
+    setSendActive(true);
 
     // `text` is what the user sees (bubble + transcript); `payload` is what /chat
     // receives. They differ only for starter pills; the override is consumed once.
@@ -2422,7 +2509,6 @@
 
     input.value = '';
     input.style.height = 'auto';
-    document.getElementById('send').disabled = true;
 
     appendMsg('user', text);
     const requestHistory = cappedHistory();
@@ -2438,10 +2524,16 @@
       let streamed = false;
       if (window.ReadableStream && window.fetch) {
         try {
-          streamed = await sendViaStream(text, payload, requestHistory);
+          streamed = await sendViaStream(text, payload, requestHistory, requestState);
         } catch (err) {
           const errorText = (err && err.message) || String(err);
-          if (err && err.streamAccepted) {
+          if (err && err.noCopilotAccess) {
+            removeTyping();
+            appendNoCopilotMessage(err.copilotUsername);
+            streamed = true;
+          } else if (isAbortError(err, requestState)) {
+            throw err;
+          } else if (err && err.streamAccepted) {
             // Once the server accepts the stream, an agent may already have sent
             // email, changed CRM state, or written a file. Replaying through /chat
             // would execute that work twice, so surface the interruption instead.
@@ -2459,17 +2551,31 @@
         }
       }
       if (!streamed) {
-        await sendViaPost(text, payload, requestHistory);
+        await sendViaPost(text, payload, requestHistory, requestState);
+      }
+    } catch (err) {
+      removeTyping();
+      if (isAbortError(err, requestState)) {
+        clog('chat.stopped', { silent: requestState.silentCancel });
+        if (!requestState.silentCancel && requestState.epoch === conversationEpoch) {
+          appendMsg('system', 'Response stopped. Any agent action already started may still finish.');
+        }
+      } else {
+        clog('chat.unexpected_error', { error: (err && err.message) || String(err) });
+        appendMsg('system', 'The request could not be completed. Please try again.');
       }
     } finally {
-      document.getElementById('send').disabled = false;
-      input.focus();
+      if (activeRequest === requestState) {
+        activeRequest = null;
+        setSendActive(false);
+        input.focus();
+      }
     }
   }
 
   // Non-streaming path — the original POST /chat flow verbatim. Reachable as the
   // streaming fallback and whenever ReadableStream is unavailable.
-  async function sendViaPost(text, payload, requestHistory) {
+  async function sendViaPost(text, payload, requestHistory, requestState) {
     try {
       // Send a capped copy of history (on-screen transcript is untouched).
       const body = { user_input: payload, conversation_history: requestHistory };
@@ -2478,10 +2584,12 @@
       const r = await fetch(`${API}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: requestState.controller.signal,
       });
 
       const d = await r.json();
+      if (requestState.epoch !== conversationEpoch) return;
       removeTyping();
       if (d.agent_logs) console.log('[brainstem] agent_logs:', d.agent_logs.slice(0, 200));
 
@@ -2492,12 +2600,7 @@
           // They ARE authenticated — only Copilot entitlement is missing. Surface the
           // persistent banner (with Retry) and an inline note. Do NOT clear
           // brainstem_auth: that would bounce them to a misleading "signed out" state.
-          showCopilotBanner(username);
-          const wrap = appendMsg('system', '');
-          setChildren(wrap.querySelector('.bubble'), [
-            strong(username), ' doesn\'t have GitHub Copilot access yet. Enable Copilot on your account, then ',
-            actionLink('Retry', 'color:#58a6ff', function () { retryCopilot(); }), ' — no need to sign in again.'
-          ]);
+          appendNoCopilotMessage(username);
         } else if (d.error.includes('usage limit') || d.error.includes('quota')) {
           const wrap = appendMsg('system', '');
           setChildren(wrap.querySelector('.bubble'), [
@@ -2548,6 +2651,7 @@
         }
       }
     } catch (err) {
+      if (isAbortError(err, requestState) || requestState.epoch !== conversationEpoch) throw err;
       removeTyping();
       clog('chat.network_error', { error: err.message });
       // A completely bounced call is the ONE signal that we're not connected.
@@ -2568,7 +2672,7 @@
   // fires, and re-renders markdown on done — reusing appendMsg's structure. A failure
   // before HTTP acceptance can fall back to /chat; every later failure is tagged so
   // sendMessage will not replay potentially non-idempotent agent actions.
-  async function sendViaStream(text, payload, requestHistory) {
+  async function sendViaStream(text, payload, requestHistory, requestState) {
     let responseAccepted = false;
     try {
       // Send a capped copy of history (on-screen transcript is untouched).
@@ -2578,7 +2682,8 @@
       const r = await fetch(`${API}/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: requestState.controller.signal,
       });
       if (!r.ok || !r.body) throw new Error(`stream http ${r.status}`);
       responseAccepted = true;
@@ -2672,8 +2777,16 @@
       // Called at finalize: let the tail write itself out quickly but visibly.
       return new Promise(resolve => {
         let prev = 0;
+        let finishRafId = null;
+        const finishDrain = () => {
+          if (finishRafId) cancelAnimationFrame(finishRafId);
+          requestState.controller.signal.removeEventListener('abort', finishDrain);
+          resolve();
+        };
+        requestState.controller.signal.addEventListener('abort', finishDrain, { once: true });
         (function finish(ts) {
-          if (!bubbleEl || shown >= assembled.length) return resolve();
+          if (requestState.controller.signal.aborted) return finishDrain();
+          if (!bubbleEl || shown >= assembled.length) return finishDrain();
           const dt = prev ? Math.min((ts - prev) / 1000, 0.1) : 0.016;
           prev = ts;
           // The finale keeps the same calm ceiling — no last-second face-smash.
@@ -2683,7 +2796,7 @@
           const goal = chat.scrollHeight - chat.clientHeight;
           const gap = goal - chat.scrollTop;
           if (gap > 0) chat.scrollTop += Math.min(gap, Math.max(0.5, 160 * dt));
-          requestAnimationFrame(finish);
+          finishRafId = requestAnimationFrame(finish);
         })(performance.now());
       });
     }
@@ -2699,10 +2812,10 @@
         bubbleEl.append(textNode, caret);
       }
     }
-    function rollback() {
+    function rollback(restoreTyping = true) {
       if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
       if (bubbleWrap) { bubbleWrap.remove(); bubbleWrap = null; }
-      if (!document.getElementById('typing-indicator')) appendTyping();
+      if (restoreTyping && !document.getElementById('typing-indicator')) appendTyping();
     }
 
     try {
@@ -2728,14 +2841,18 @@
           } else if (evt.type === 'done') {
             doneData = evt;
           } else if (evt.type === 'error') {
-            throw new Error(evt.error || 'stream error');
+            const streamError = new Error(evt.error || 'stream error');
+            streamError.noCopilotAccess = !!evt.no_copilot_access;
+            streamError.copilotUsername = evt.copilot_username || null;
+            throw streamError;
           }
         }
       }
     } catch (err) {
       // Roll back any partial stream UI so the POST fallback is seamless, and
       // cancel the reader so no half-read stream is left dangling.
-      rollback();
+      rollback(!err.noCopilotAccess && !isAbortError(err, requestState)
+           && requestState.epoch === conversationEpoch);
       try { await reader.cancel(); } catch (e) {}
       throw err;
     }
@@ -2746,9 +2863,22 @@
       throw new Error('stream ended without done');
     }
 
+    if (requestState.epoch !== conversationEpoch) {
+      if (rafId) cancelAnimationFrame(rafId);
+      if (bubbleWrap) bubbleWrap.remove();
+      removeTyping();
+      return true;
+    }
+
     // Finalize — let the typewriter finish gracefully, then swap in markdown.
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
     await drainRemaining();
+    if (requestState.controller.signal.aborted) {
+      if (bubbleWrap) bubbleWrap.remove();
+      removeTyping();
+      throw new DOMException('Response stopped', 'AbortError');
+    }
+    if (requestState.epoch !== conversationEpoch) return true;
     if (caret) caret.remove();
     removeTyping();
     const d = doneData;
@@ -3273,6 +3403,9 @@
 
   // ── Actions ──
   function clearChat() {
+    conversationEpoch += 1;
+    cancelActiveRequest(true);
+    starterPayloadOverride = null;
     history = [];
     fullTranscript = [];
     sessionId = null;
@@ -3325,11 +3458,20 @@
     if (!file) return;
     event.target.value = '';
     const reader = new FileReader();
-    reader.onload = function(e) {
+    reader.onload = async function(e) {
       try {
         const data = JSON.parse(e.target.result);
         const turns = data.turns || [];
         if (!turns.length) { alert('No turns found in file.'); return; }
+
+        conversationEpoch += 1;
+        cancelActiveRequest(true);
+
+        if (data.model) {
+          const modelSelect = document.getElementById('model-select');
+          const hasModel = modelSelect && [...modelSelect.options].some(opt => opt.value === data.model);
+          if (hasModel && data.model !== currentModel) await changeModel(data.model);
+        }
 
         // Clear current chat and restore session
         history = [];
@@ -3340,15 +3482,6 @@
         sessionId = data.session_id || null;
         const sidEl = document.getElementById('session-id');
         if (sidEl) sidEl.textContent = sessionId ? sessionId.slice(0, 8) + '...' : '\u2014';
-
-        if (data.model) {
-          const modelSelect = document.getElementById('model-select');
-          if (modelSelect) {
-            for (const opt of modelSelect.options) {
-              if (opt.value === data.model) { modelSelect.value = data.model; break; }
-            }
-          }
-        }
 
         // Replay each turn into the UI
         for (const turn of turns) {

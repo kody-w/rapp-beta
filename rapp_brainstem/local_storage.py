@@ -10,6 +10,7 @@ import os
 import json
 import tempfile
 import threading
+import hashlib
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".brainstem_data")
 _path_locks = {}
@@ -107,11 +108,23 @@ class AzureFileStorageManager:
 
     def __init__(self, share_name=None, **kwargs):
         self.current_guid = None
+        normalized_share = str(share_name or "").strip().lower()
+        self.share_name = normalized_share or None
+        # Preserve the historical unnamed layout for bundled agents. Named Azure
+        # shares receive deterministic, non-overlapping roots so cartridges cannot
+        # accidentally read or overwrite another share's local data.
+        self.storage_root = (
+            os.path.join("shares", hashlib.sha256(normalized_share.encode("utf-8")).hexdigest())
+            if normalized_share else ""
+        )
         # Matches CommunityRAPP paths
-        self.shared_memory_path = "shared_memories"
+        self.shared_memory_path = os.path.join(self.storage_root, "shared_memories")
         self.default_file_name = "memory.json"
         self.current_memory_path = self.shared_memory_path
         _ensure_private_dir(_DATA_DIR)
+
+    def _scoped_path(self, file_path=""):
+        return _safe_join(self.storage_root, file_path)
 
     # ── Context ───────────────────────────────────────────────────────────
 
@@ -124,7 +137,7 @@ class AzureFileStorageManager:
 
         # Valid GUID — set up user-specific path (memory/{guid})
         self.current_guid = user_guid
-        self.current_memory_path = f"memory/{user_guid}"
+        self.current_memory_path = os.path.join(self.storage_root, "memory", str(user_guid))
         return True
 
     # ── Core I/O ──────────────────────────────────────────────────────────
@@ -145,7 +158,7 @@ class AzureFileStorageManager:
 
     def read_json(self, file_path=None):
         """Read JSON data from local storage."""
-        path = _safe_join(file_path) if file_path else self._file_path()
+        path = self._scoped_path(file_path) if file_path else self._file_path()
         if not os.path.exists(path):
             return {}
         try:
@@ -156,7 +169,7 @@ class AzureFileStorageManager:
 
     def write_json(self, data, file_path=None):
         """Write JSON data to local storage (atomically)."""
-        path = _safe_join(file_path) if file_path else self._file_path()
+        path = self._scoped_path(file_path) if file_path else self._file_path()
         with _lock_for(path):
             _atomic_write(path, lambda f: json.dump(data, f, indent=2, default=str))
         return True
@@ -168,7 +181,7 @@ class AzureFileStorageManager:
         value (or {} for a missing file). Decode/read failures are raised so a
         subsequent save cannot silently erase recoverable bytes.
         """
-        path = _safe_join(file_path) if file_path else self._file_path()
+        path = self._scoped_path(file_path) if file_path else self._file_path()
         with _lock_for(path):
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
@@ -182,26 +195,26 @@ class AzureFileStorageManager:
     # ── Convenience methods used by some agents ───────────────────────────
 
     def read_file(self, file_path):
-        full = _safe_join(file_path)
+        full = self._scoped_path(file_path)
         if not os.path.exists(full):
             return None
         with open(full, "r", encoding="utf-8") as f:
             return f.read()
 
     def write_file(self, file_path, content):
-        full = _safe_join(file_path)
+        full = self._scoped_path(file_path)
         with _lock_for(full):
             _atomic_write(full, lambda f: f.write(content))
         return True
 
     def list_files(self, directory=""):
-        full = _safe_join(directory) if directory else os.path.abspath(_DATA_DIR)
+        full = self._scoped_path(directory)
         if not os.path.exists(full):
             return []
         return os.listdir(full)
 
     def delete_file(self, file_path):
-        full = _safe_join(file_path)
+        full = self._scoped_path(file_path)
         if os.path.exists(full):
             os.remove(full)
             return True
@@ -209,6 +222,6 @@ class AzureFileStorageManager:
 
     def file_exists(self, file_path):
         try:
-            return os.path.exists(_safe_join(file_path))
+            return os.path.exists(self._scoped_path(file_path))
         except ValueError:
             return False

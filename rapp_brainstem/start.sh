@@ -36,4 +36,12 @@ if [ ! -f .env ]; then
     cp .env.example .env 2>/dev/null || true
 fi
 
+# Repair permissive modes from older installers before the server reads secrets.
+chmod 600 .env 2>/dev/null || true
+for private_file in .copilot_token .copilot_session .copilot_pending .brainstem_secret voice.zip; do
+    if [ -f "$private_file" ]; then
+        chmod 600 "$private_file" 2>/dev/null || true
+    fi
+done
+
 exec "$VENV_PYTHON" brainstem.py

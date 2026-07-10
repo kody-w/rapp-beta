@@ -66,6 +66,23 @@ class TestLocalStorage(unittest.TestCase):
         mgr.set_memory_context("user-abc")
         self.assertEqual(mgr.read_json(), {"user": True})
 
+    def test_named_shares_are_isolated(self):
+        from local_storage import AzureFileStorageManager
+
+        alpha = AzureFileStorageManager(share_name="alpha")
+        alpha_again = AzureFileStorageManager(share_name="ALPHA")
+        beta = AzureFileStorageManager(share_name="beta")
+        unnamed = AzureFileStorageManager()
+
+        alpha.write_json({"owner": "alpha"})
+        alpha.write_file("notes/item.txt", "alpha file")
+
+        self.assertEqual(alpha_again.read_json(), {"owner": "alpha"})
+        self.assertEqual(beta.read_json(), {})
+        self.assertEqual(unnamed.read_json(), {})
+        self.assertFalse(beta.file_exists("notes/item.txt"))
+        self.assertFalse(unnamed.file_exists("notes/item.txt"))
+
     def test_set_memory_context(self):
         from local_storage import AzureFileStorageManager
         mgr = AzureFileStorageManager()
@@ -533,6 +550,27 @@ class TestMemoryAgentIntegration(unittest.TestCase):
         # Recall it
         result = context_agents["ContextMemory"].perform(full_recall=True)
         self.assertIn("brainstem", result.lower())
+
+    def test_full_recall_respects_max_messages(self):
+        import brainstem
+
+        agents_dir = os.path.join(os.path.dirname(os.path.abspath(brainstem.__file__)), "agents")
+        context = brainstem._load_agent_from_file(
+            os.path.join(agents_dir, "context_memory_agent.py"))["ContextMemory"]
+        context.storage_manager.write_json({
+            str(index): {
+                "message": f"memory-{index}",
+                "theme": "fact",
+                "date": "2026-07-09",
+                "time": f"00:00:{index:02d}",
+            }
+            for index in range(10)
+        })
+
+        result = context.perform(full_recall=True, max_messages=3)
+        self.assertEqual(result.count("(Theme:"), 3)
+        self.assertIn("memory-9", result)
+        self.assertNotIn("memory-0", result)
 
     def test_concurrent_manage_memory_saves_are_not_lost(self):
         import brainstem
