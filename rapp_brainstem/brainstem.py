@@ -3,7 +3,7 @@ RAPP Brainstem — minimal local AI agent endpoint.
 Only dependency: a GitHub account with Copilot access.
 
 Uses the GitHub Copilot API directly.
-No API keys needed — just `gh auth login`.
+No model-provider API key needed — sign in with GitHub through the web UI.
 
 Usage:
     ./start.sh
@@ -77,10 +77,9 @@ _ALLOWED_HOSTS.update(
 # the network at /<dirname>/<file>. index.html is served explicitly by the / route.
 app = Flask(__name__, static_folder=None)
 
-# CORS: allow only localhost origins (any port), not "*". A page the brainstem
-# serves is SAME-ORIGIN with its own fetches — including when reached over the LAN
-# by IP — so this never affects the real UI; it only stops OTHER websites from
-# scripting the brainstem inside a victim's browser.
+# CORS: allow only localhost origins (any port), not "*". The bundled local UI is
+# same-origin with its own fetches; this stops other websites from scripting the
+# brainstem inside a victim's browser.
 _LOCALHOST_ORIGIN_RE = re.compile(
     r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$", re.IGNORECASE
 )
@@ -91,11 +90,10 @@ CORS(app, origins=_LOCALHOST_ORIGIN_RE)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 # ── Loopback detection + LAN secret gate ──────────────────────────────────────
-# The server intentionally binds 0.0.0.0 (LAN access is a feature). To keep that
-# safe, code-loading / state-changing routes require a per-install secret (header
-# X-Brainstem-Secret) — EXCEPT for same-machine (loopback) callers, so the local UI
-# keeps working with zero changes. Read-only routes and /chat stay open so LAN
-# chat/twin still works.
+# The server binds only to loopback unless LAN mode is explicitly enabled. In LAN
+# mode, capability-bearing routes require a per-install secret (header
+# X-Brainstem-Secret) for non-loopback callers. Same-machine callers remain exempt
+# so the local UI keeps working with zero configuration.
 _LOOPBACK_ADDRS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
 
@@ -202,7 +200,7 @@ def _reject_cross_origin_unsafe_request():
 
 
 def _require_secret(fn):
-    """Guard a code-loading / state-changing route. Loopback (same-machine) callers
+    """Guard a capability-bearing route. Loopback (same-machine) callers
     are exempt so the local UI is unchanged; any other (LAN) caller must present the
     per-install secret in the X-Brainstem-Secret header, else gets a clean 403 JSON."""
     @functools.wraps(fn)
@@ -726,7 +724,7 @@ def _load_or_create_secret():
         except OSError:
             pass
         print(f"[brainstem] Generated LAN access secret at {_secret_file} (0600).")
-        print(f"[brainstem]   Non-loopback mutating calls must send header  X-Brainstem-Secret: {secret}")
+        print(f"[brainstem]   Non-loopback capability calls must send header  X-Brainstem-Secret: {secret}")
         print(f"[brainstem]   Same-machine (loopback) UI never needs it.")
     except Exception as e:
         print(f"[brainstem] WARNING: could not persist secret file ({e}); using in-memory secret.")
